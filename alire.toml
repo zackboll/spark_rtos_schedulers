@@ -1,0 +1,13 @@
+name = "spark_rtos_schedulers"
+description = "SPARK example RTOS schedulers"
+version = "0.1.0-dev"
+
+authors = ["Zack Boll"]
+maintainers = ["Zack Boll <zackboll@gmail.com>"]
+maintainers-logins = ["zackboll"]
+licenses = "Apache-2.0"
+website = ""
+tags = ["rtos", "spark", "scheduler"]
+
+[[depends-on]]
+gnatprove = "^16.1.0"
