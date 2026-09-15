@@ -218,43 +218,154 @@ pending an ordered ghost sequence model.
 
 Package: `RTOS.Indexed_Scheduler`.
 
-Only `Initialize` is real. `Make_Ready`, `Block`, `Yield`, `Select_Next`,
-and `Schedule` are temporary representation-preserving no-ops; they do
-not change task states or queue links.
-
-This representation keeps linked-queue behavior but does not use Ada
-access types for queue membership. `Head`, `Tail`, and `Next` contain
-`Optional_Task_Id` values:
+The indexed scheduler now implements the same public behavioral
+operations as the pointer scheduler. `Task_Id` itself is the logical
+queue node. There is no separate heap node and no free-node pool.
+`Heads`, `Tails`, and `Next` store `Optional_Task_Id` values:
 
 ```
-Head(P) -> Task_Id -> Task_Id -> Task_Id
-                              ^
-                              |
-                            Tail(P)
+Heads(P)
+   |
+   v
+Task_Id -> Task_Id -> Task_Id -> No_Task
+                     ^
+                     |
+                  Tails(P)
 ```
 
-Because the links are identifiers rather than writable pointers, `Head`
-and `Tail` do not create SPARK ownership aliases. That is expected to
-permit:
+`Next` is indexed by `Task_Id`. Persistent Head and Tail are legal
+because integer IDs are not SPARK access aliases. There is no
+allocation and no access type in this package.
 
-- enqueue: O(1)
-- dequeue: O(1)
-- same-priority yield: O(1)
+Public operations:
 
-Task selection may later use a fixed-width ready-priority bitmap over
-the eight priority levels. The indexed lists still encode the same
-scheduler semantics as the pointer lists; only the representation, and
-therefore the aliasing structure, changes.
+- `Make_Ready`: Dormant/Blocked -> Ready, O(1) append to the
+  configured-priority tail, `Ready_Count + 1`.
+- `Select_Next`: find the highest `Nonempty` priority (at most 8
+  checks), O(1) dequeue of that head, Ready -> Running, set Current,
+  `Ready_Count - 1`. If no ready queue is nonempty, remain idle.
+- `Block`: current Running -> Blocked, Current := `No_Task`, queue
+  unchanged.
+- `Yield`: current Running -> Ready, O(1) tail enqueue, then
+  `Select_Next`.
+- `Schedule`: dispatch when idle. Equal priority does not preempt. A
+  strictly higher ready priority causes the current task to be O(1)
+  requeued, followed by `Select_Next`.
 
-## Shared skeleton shape
+Indexed complexity, with `Priority_Count` statically equal to 8:
+
+- enqueue                    O(1)
+- dequeue                    O(1)
+- yield queue mutation       O(1)
+- preemption queue mutation  O(1)
+- priority selection         at most 8 `Nonempty` checks
+
+Selection is therefore constant with respect to task count. The package
+does not implement or claim a ready-priority bitmap or a CLZ/bit-scan
+selector.
+
+### Indexed behavioral proof model
+
+`Indexed_Scheduler_Valid` is a local behavioral/structural layer. It
+does not prove complete Head-chain reachability, global acyclicity, or
+Ready-iff-reachable membership. Those remain the next indexed Gold
+layer.
+
+#### Queue_Structure_Valid
+
+For each priority:
+
+- Head empty iff Tail empty
+- `Nonempty` matches Head presence
+- Tail.Next = `No_Task`
+
+This is endpoint/flag consistency, not a walk of the whole chain.
+
+#### Endpoint_Ready_Valid
+
+Existing Head/Tail IDs:
+
+- have state Ready
+- have configured priority matching P
+
+#### Next_Edges_Valid
+
+Every non-null immediate Next target:
+
+- is Ready
+- has the same configured priority as its source
+
+This is a one-edge invariant. It supplies Dequeue with successor
+state/priority without reachability.
+
+#### Heads_Unreferenced
+
+No Next edge points to a current Head. In particular, a selected head
+has no incoming edge, including no self-loop as head. This is the
+predecessor discipline needed by Dequeue.
+
+#### Next_Injective
+
+Two non-null equal Next targets must have the same source. This
+prevents two different tasks from sharing an immediate successor. When
+Dequeue promotes a successor to Head and clears the old head's Next,
+the successor has no remaining predecessor.
+
+`Next_Injective` is local predecessor uniqueness. It does **not** prove
+global acyclicity, global membership uniqueness, or reachability from
+a Head.
+
+#### Nonready_Unlinked
+
+A non-Ready task has no outgoing Next. Combined with `Next_Edges_Valid`,
+a non-Ready task also cannot currently be the target of any Next edge,
+because every non-null target must be Ready.
+
+#### Ready_Count_State_Valid
+
+`Ready_Count` equals the number of tasks whose scalar state is Ready.
+This proves count increments/decrements and Select_Next subtraction
+safety. It does **not** prove that `Ready_Count` equals the total
+length of all Head/Next chains. Disconnected Ready components remain
+admitted by this behavioral invariant.
+
+`No_Self_Loops` exists as a ghost observation but is not part of the
+stable invariant. `Heads_Unreferenced` already excludes self-loops for
+current heads. Global acyclicity of disconnected/non-head nodes belongs
+to the later Gold reachability model.
+
+### Pointer vs indexed proof difference
+
+This contrast is one of the primary purposes of the repository.
+
+Pointer scheduler:
+
+- access-based nodes
+- SPARK ownership controls writable aliasing
+- structural ownership prevents pointer cycles in owned list structures
+- no persistent writable Tail
+- O(N) tail append through anonymous borrowing/reborrowing
+- semantic Task_Id uniqueness still requires ghost occurrence modeling
+
+Indexed scheduler:
+
+- Task_Id links
+- no writable-pointer aliasing problem
+- persistent Head/Tail
+- O(1) tail append
+- ownership no longer provides structural graph properties
+- predecessor discipline must be encoded explicitly
+  (`Heads_Unreferenced`, `Next_Injective`, `Next_Edges_Valid`)
+- global reachability/acyclicity will have to be proved semantically
+
+## Shared package shape
 
 Both packages expose a limited private `Scheduler` object rather than
 hidden package state. That keeps the comparison aligned and gives the
 pointer model a single owner for its heap lists. Scheduler objects are
 initialized with a complete `Task_Priorities` map; every `Task_Id` then
-exists in `Dormant`. Pointer `Make_Ready`, `Block`, `Select_Next`,
-`Yield`, and `Schedule` now change this state. Indexed operations other
-than `Initialize` remain no-ops.
+exists in `Dormant`. Pointer and indexed `Make_Ready`, `Block`,
+`Select_Next`, `Yield`, and `Schedule` now change this state.
 
 Gold-level integrity properties for these structures are listed in
 `docs/proof_strategy.md`. The pointer package now proves the ownership
@@ -262,3 +373,7 @@ foundation, the scalar Current/Running invariant, ready-membership
 uniqueness via `Ready_Occurrences`, queue-priority consistency, and
 highest-configured-priority selection. It meets the project's SPARK Gold
 integrity target. Ordered FIFO/round-robin sequence proof remains deferred.
+
+The indexed package proves the corresponding public operations against
+its local structural invariant. It does not yet prove indexed Gold
+reachability or membership closure.

@@ -12,7 +12,7 @@ The same logical scheduler is being built twice:
 1. `RTOS.Pointer_Scheduler` — per-priority singly linked ready lists
    using Ada access types and SPARK ownership/borrowing.
 2. `RTOS.Indexed_Scheduler` — the same linked-queue behavior with
-   bounded `Task_Id` links instead of pointers, aiming at O(1)
+   bounded `Task_Id` links instead of pointers, with O(1)
    enqueue, dequeue, and same-priority yield.
 
 The question under investigation is architectural: SPARK's ownership
@@ -24,7 +24,7 @@ and `Tail` because the links are IDs, not writable aliases.
 
 ## Current status
 
-The pointer scheduler now implements the real behavioral transitions on
+The pointer scheduler implements the real behavioral transitions on
 the proved list model and reaches the project's SPARK Gold integrity
 target for REQ-SCHED-001 through REQ-SCHED-008. Queue nodes represent
 READY membership only. Persistent pointer roots remain `Free_Head` and
@@ -45,10 +45,59 @@ state `Running` and owns no ready node.
   higher ready priority. Equal-priority tasks rotate only through Yield.
 
 Priority lookup is O(P) with P=8 fixed. Tail insertion remains O(N).
-There is no allocation after `Initialize`. Indexed scheduler operations
-remain representation-preserving skeletons.
+There is no allocation after `Initialize`.
 
-`Scheduler_Valid` composes four proved predicates:
+The indexed scheduler is no longer a skeleton. `Task_Id` values are the
+linked queue nodes. `Heads(P)`, `Tails(P)`, and `Next(Id)` store
+`Optional_Task_Id`. Persistent Head and Tail are legal because they are
+identifiers, not writable SPARK access aliases. There is no heap
+allocation and no access type in the indexed implementation.
+
+- `Initialize` clears all links, states, and counts.
+- `Make_Ready` marks a Dormant or Blocked task Ready and O(1) appends
+  it at its configured-priority tail.
+- `Block` marks the currently running task Blocked and clears Current;
+  ready links are unchanged.
+- `Select_Next` scans at most the eight `Nonempty` flags, O(1)
+  dequeues the highest nonempty head, and sets that task Running.
+- `Yield` requeues Current at its priority tail in O(1), then
+  dispatches with `Select_Next`.
+- `Schedule` dispatches when idle and preempts only for a strictly
+  higher ready priority. Equal-priority tasks do not preempt; they
+  rotate only through Yield.
+
+Indexed complexity, with `Priority_Count` statically equal to 8:
+
+- enqueue                    O(1)
+- dequeue                    O(1)
+- yield queue mutation       O(1)
+- preemption queue mutation  O(1)
+- priority selection         at most 8 `Nonempty` checks
+
+Selection is therefore constant with respect to task count. The package
+does not implement or claim a ready-priority bitmap or a CLZ/bit-scan
+selector.
+
+`Indexed_Scheduler_Valid` is a proved local behavioral/structural
+layer, not indexed Gold reachability. It currently composes:
+
+- `Scalar_Scheduler_Valid` — at most one Running task, identified by Current
+- `Queue_Structure_Valid` — Head/Tail empty equivalence, Nonempty flags, tail terminator
+- `Endpoint_Ready_Valid` — existing Head/Tail IDs are Ready at priority P
+- `Nonready_Unlinked` — non-Ready tasks have no outgoing Next
+- `Next_Edges_Valid` — every non-null Next target is Ready at the source's priority
+- `Heads_Unreferenced` — no Next edge points to a current Head
+- `Next_Injective` — unique non-null immediate predecessors
+- `Ready_Count_State_Valid` — `Ready_Count` equals the number of tasks whose scalar state is Ready
+
+`Ready_Count_State_Valid` is scalar accounting. It does **not** prove
+that `Ready_Count` equals the total length of all Head/Next chains.
+`Next_Injective` proves unique immediate predecessors; it does **not**
+by itself prove global acyclicity, global membership uniqueness, or
+reachability from a Head. Complete Head-chain reachability remains the
+next indexed Gold layer.
+
+Pointer `Scheduler_Valid` composes four proved predicates:
 
 - `Representation_Valid` — owned lists, lengths, and pool accounting
 - `Scalar_Scheduler_Valid` — at most one Running task, identified by Current
@@ -71,7 +120,9 @@ include "at most one Running task" and "ready-queue membership matches
 Ready state".
 
 Gold here means proved structural/integrity contracts. It does **not**
-mean full functional correctness of the scheduler.
+mean full functional correctness of the scheduler. The pointer
+scheduler currently meets that Gold target. The indexed scheduler
+meets its current local contracts, not yet Gold reachability.
 
 ## Layout
 
@@ -90,12 +141,18 @@ alr exec -- gnatprove -P spark_rtos_schedulers.gpr --mode=prove
 ```
 
 The project uses GNATprove proof level 2 for ownership/framing checks.
-All 643 checks pass (zero unproved or justified checks). All scheduler
-units are analyzed in SPARK without suppressed checks or proof-silencing
-annotations. The pointer scheduler now meets the project's documented
-SPARK Gold integrity target for REQ-SCHED-001 through REQ-SCHED-008.
-That is not a claim of full functional correctness, Platinum, timing,
-fairness, or FIFO sequence proof.
+The current whole-project GNATprove run discharges 894/894 checks
+(zero unproved, zero justified, zero flow errors). All scheduler units
+are analyzed in SPARK without suppressed checks or proof-silencing
+annotations.
+
+The pointer scheduler meets the project's documented SPARK Gold
+integrity target for REQ-SCHED-001 through REQ-SCHED-008. The indexed
+scheduler's behavioral and local structural contracts are fully proved
+for the current invariant; indexed Gold reachability, acyclicity, and
+membership closure remain deferred. That is not a claim of full
+functional correctness, Platinum, timing, fairness, or FIFO sequence
+proof.
 
 The build currently reports that the standard big-integer package is an
 Ada 2022 unit under the existing compiler mode. Proof emits informational

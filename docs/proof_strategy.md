@@ -9,11 +9,13 @@ fully specified or that every scheduling decision is proved equivalent
 to an abstract functional model. Platinum-style functional completeness
 is outside the initial scope.
 
-The skeleton currently aims only for a clean SPARK-eligible
-architecture: absence of hidden proof failures, with the integrity
-requirements below documented as stable IDs. They are encoded as
-predicates and contracts on the pointer scheduler and are claimed
-proved only when the corresponding VCs discharge.
+The repository currently aims for a clean SPARK-eligible architecture:
+absence of hidden proof failures, with the integrity requirements below
+documented as stable IDs. They are encoded as predicates and contracts
+on the pointer scheduler and are claimed proved only when the
+corresponding VCs discharge. The indexed scheduler has a separate
+proved behavioral/local structural layer; it does not yet claim Gold
+reachability.
 
 ## Integrity requirements
 
@@ -125,6 +127,71 @@ the maximum `Priority` that currently has a ready member. This is an
 integrity constraint on choice among ready queues, not a full proof
 that the scheduler implements every detail of POSIX or Ada dispatching.
 
+## Indexed scheduler — current behavioral proof layer
+
+This section is **not** indexed Gold completion. The pointer Gold table
+above remains the project's Gold integrity claim. The indexed scheduler
+currently proves a local behavioral/structural invariant:
+
+`Indexed_Scheduler_Valid` =
+`Indexed_Representation_Valid` +
+`Scalar_Scheduler_Valid` +
+`Ready_Count_State_Valid`
+
+where `Indexed_Representation_Valid` composes
+`Queue_Structure_Valid`, `Endpoint_Ready_Valid`,
+`Nonready_Unlinked`, `Next_Edges_Valid`, `Heads_Unreferenced`, and
+`Next_Injective`.
+
+| Property | Indexed formalization | Current status |
+| --- | --- | --- |
+| Current/Running uniqueness | `Scalar_Scheduler_Valid` | Proved |
+| endpoint Head/Tail consistency | `Queue_Structure_Valid` | Proved |
+| endpoint state/priority | `Endpoint_Ready_Valid` | Proved |
+| non-Ready tasks have no outgoing link | `Nonready_Unlinked` | Proved |
+| immediate Next targets valid | `Next_Edges_Valid` | Proved |
+| Heads have no predecessor | `Heads_Unreferenced` | Proved |
+| unique immediate predecessor | `Next_Injective` | Proved |
+| Ready_Count equals scalar Ready-state count | `Ready_Count_State_Valid` | Proved |
+| highest Nonempty priority selection | `Find_Highest_Ready` / contracts | Proved |
+| complete Head reachability | future Gold model | Deferred |
+| global acyclicity | future Gold model | Deferred |
+| Ready iff reachable exactly once | future Gold model | Deferred |
+| tail reachable from head | future Gold model | Deferred |
+| chain cardinality = Ready_Count | future Gold model | Deferred |
+
+`Ready_Count_State_Valid` counts scalar Ready states. It does not prove
+queue-chain cardinality. `Next_Injective` proves unique non-null
+immediate predecessors. It does not prove global acyclicity or
+membership uniqueness. Disconnected Ready components remain admitted.
+
+### Indexed requirement status
+
+These statuses are conservative. They describe the current local layer,
+not Gold closure.
+
+| Requirement | Indexed status | Justification |
+| --- | --- | --- |
+| REQ-SCHED-001 | Proved at the scalar Current/Running layer | `Scalar_Scheduler_Valid` is part of `Indexed_Scheduler_Valid` and is preserved by Initialize, Make_Ready, Block, Yield, Select_Next, and Schedule |
+| REQ-SCHED-002 | Partial / local | The Running task has no outgoing Next (`Nonready_Unlinked`) and Current is unique, but complete absence from every reachable ready chain is not yet globally modeled |
+| REQ-SCHED-003 | Partial | Endpoints and every immediate Next target are Ready (`Endpoint_Ready_Valid`, `Next_Edges_Valid`), but complete Head-reachable chain closure is not yet formalized globally |
+| REQ-SCHED-004 | Not yet fully proved | Ready scalar state is counted (`Ready_Count_State_Valid`), but Ready => reachable exactly once from one Head is deferred |
+| REQ-SCHED-005 | Partial | `Next_Injective` provides unique immediate predecessors, but global acyclicity, repetition, and membership uniqueness are deferred |
+| REQ-SCHED-006 | Partial | Endpoints and Next edges preserve configured priority locally; the full reachable-chain property is deferred |
+| REQ-SCHED-007 | Proved for the current local representation invariant | Public indexed operations require and preserve `Indexed_Scheduler_Valid`. This is not yet the eventual Gold reachability invariant |
+| REQ-SCHED-008 | Proved at the Nonempty/head selection layer | `Find_Highest_Ready` selects the greatest nonempty priority. Full equivalence to the greatest-priority Ready task depends on Ready => globally reachable queue membership, so Gold-level closure remains deferred |
+
+Deferred to indexed Gold reachability, and not claimed here:
+
+- recursive/bounded Head reachability
+- complete acyclicity
+- Ready iff reachable
+- exact queue-chain length = Ready_Count
+- tail reachability
+- global queue membership uniqueness
+- indexed REQ-SCHED-003..006 Gold closure
+
+
 ## What Gold is not
 
 These requirements constrain well-formedness of scheduler state and the
@@ -164,8 +231,9 @@ alr build
 alr exec -- gnatprove -P spark_rtos_schedulers.gpr --mode=prove
 ```
 
-The skeleton is successful when GNATprove analyzes every intended
-package as SPARK and reports no hidden or unexpected failed checks.
-REQ-SCHED-001 through REQ-SCHED-008 are encoded and proved on the
-pointer scheduler. FIFO/round-robin sequence ordering remains later
-work and is outside Gold.
+The current whole-project GNATprove run discharges 894/894 checks
+(zero unproved, zero justified, zero flow errors). REQ-SCHED-001
+through REQ-SCHED-008 are encoded and proved on the pointer scheduler.
+The indexed scheduler's current local contracts are also fully proved;
+indexed Gold reachability remains later work. FIFO/round-robin sequence
+ordering remains later work and is outside Gold.
