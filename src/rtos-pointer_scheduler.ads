@@ -18,8 +18,12 @@ with Ada.Numerics.Big_Numbers.Big_Integers;
 --    remove ready head     O(1)
 --    append ready tail     O(N)   --  intentional; no stored tail
 --
---  Make_Ready is wired to acquire + tail-append. Block, Yield,
---  Select_Next, and Schedule remain skeleton implementations.
+--  Make_Ready acquires a free node and appends at the ready tail.
+--  Select_Next consumes the highest-priority ready head and releases
+--  that node to the free list. Block marks the current Running task
+--  Blocked without touching lists. Yield requeues Current at its tail
+--  then dispatches. Schedule preempts only for a strictly higher
+--  nonempty ready priority.
 
 package RTOS.Pointer_Scheduler
   with SPARK_Mode => On
@@ -31,6 +35,8 @@ is
    use Ada.Numerics.Big_Numbers.Big_Integers;
 
    subtype Node_Count is Natural range 0 .. Max_Tasks;
+
+   type Ready_Length_Map is array (Priority) of Big_Natural;
 
    type Scheduler is limited private
      with Default_Initial_Condition =>
@@ -52,6 +58,10 @@ is
    with
      Pre => Is_Initialized (S);
 
+   function Priority_Of (S : Scheduler; Id : Task_Id) return Priority
+   with
+     Pre => Is_Initialized (S);
+
    function Has_Free_Node (S : Scheduler) return Boolean
      with Ghost;
 
@@ -62,13 +72,26 @@ is
      with Ghost;
 
    function Representation_Valid (S : Scheduler) return Boolean with Ghost;
+   function Scalar_Scheduler_Valid (S : Scheduler) return Boolean with Ghost;
+   --  A Running task occupies Current and therefore leaves at least one
+   --  pool node off the ready lists. Distinct from Has_Free_Node: this
+   --  is the counter-level slot, later converted by the free-node lemma.
+   function Running_Has_Free_Slot (S : Scheduler) return Boolean with Ghost;
    function Total_Ready_List_Length (S : Scheduler) return Big_Natural
      with Ghost;
    function Ready_Contains (S : Scheduler; Id : Task_Id) return Boolean
      with Ghost;
    function Ready_Occurrences (S : Scheduler; Id : Task_Id)
      return Big_Natural with Ghost;
+   function Ready_List_Length (S : Scheduler; P : Priority) return Big_Natural
+     with Ghost;
    function Free_List_Length (S : Scheduler) return Big_Natural with Ghost;
+   function Copy_States (S : Scheduler) return Task_State_Map with Ghost;
+   function Copy_Ready_Lengths (S : Scheduler) return Ready_Length_Map
+     with Ghost;
+   function No_Ready_Above
+     (Lengths : Ready_Length_Map; Bound : Priority) return Boolean
+     with Ghost;
 
    procedure Lemma_Free_Node_Available (S : Scheduler)
    with Ghost,
@@ -89,7 +112,9 @@ is
      and then Free_Nodes (S) = Max_Tasks
      and then Ready_Nodes (S) = 0
      and then (for all Id in Task_Id => State_Of (S, Id) = Dormant)
-     and then Representation_Valid (S);
+     and then Representation_Valid (S)
+     and then Scalar_Scheduler_Valid (S)
+     and then Running_Has_Free_Slot (S);
 
    --  Acquire a free node, assign Id, and append at the tail of the
    --  ready list for Id's priority. No allocation is performed.
@@ -97,6 +122,7 @@ is
    with
      Pre  => Is_Initialized (S)
      and then Representation_Valid (S)
+     and then Scalar_Scheduler_Valid (S)
      and then State_Of (S, Id) /= Ready
      and then State_Of (S, Id) /= Running
      and then Has_Free_Node (S)
@@ -107,45 +133,169 @@ is
      and then Free_Nodes (S) = Free_Nodes (S)'Old - 1
      and then Ready_Nodes (S) = Ready_Nodes (S)'Old + 1
      and then Representation_Valid (S)
+     and then Scalar_Scheduler_Valid (S)
      and then Ready_Contains (S, Id)
      and then Ready_Occurrences (S, Id) = Ready_Occurrences (S, Id)'Old + 1
      and then Total_Ready_List_Length (S) =
                 Total_Ready_List_Length (S)'Old + 1
-     and then Free_List_Length (S) = Free_List_Length (S)'Old - 1;
+     and then Free_List_Length (S) = Free_List_Length (S)'Old - 1
+     and then Current_Task (S) = Current_Task (S)'Old
+     and then (for all Other in Task_Id =>
+                 (if Other /= Id then
+                    State_Of (S, Other) = Copy_States (S)'Old (Other)));
 
-   --  Temporary representation-preserving no-ops until full pointer
-   --  transitions are implemented. No scalar, list, or count is changed.
-   --  Block does not yet detach a ready-list node.
+   --  Block the currently running task. Queue nodes represent READY
+   --  membership only, so this transition does not touch any list.
    procedure Block (S : in out Scheduler; Id : Task_Id)
    with
-     Pre  => Is_Initialized (S),
+     Pre  => Is_Initialized (S)
+     and then Representation_Valid (S)
+     and then Scalar_Scheduler_Valid (S)
+     and then Running_Has_Free_Slot (S)
+     and then Current_Task (S) = To_Optional (Id)
+     and then State_Of (S, Id) = Running,
      Post => Is_Initialized (S)
-     and then Current_Task (S) = Current_Task (S)'Old
-     and then Representation_Valid (S) = Representation_Valid (S)'Old;
+     and then Representation_Valid (S)
+     and then Scalar_Scheduler_Valid (S)
+     and then Running_Has_Free_Slot (S)
+     and then Current_Task (S) = No_Task
+     and then State_Of (S, Id) = Blocked
+     and then Ready_Nodes (S) = Ready_Nodes (S)'Old
+     and then Free_Nodes (S) = Free_Nodes (S)'Old
+     and then Total_Ready_List_Length (S) =
+                Total_Ready_List_Length (S)'Old
+     and then Free_List_Length (S) = Free_List_Length (S)'Old
+     and then (for all P in Priority =>
+                 Ready_List_Length (S, P) =
+                   Copy_Ready_Lengths (S)'Old (P))
+     and then (for all Other in Task_Id =>
+                 (if Other /= Id then
+                    State_Of (S, Other) = Copy_States (S)'Old (Other)))
+     and then (for all Other in Task_Id => State_Of (S, Other) /= Running);
 
-   --  Skeleton: does not yet requeue a running task.
+   --  Requeue the running task at the tail of its priority list, then
+   --  dispatch with Select_Next. Equal-priority rotation is an
+   --  implementation property of tail insertion; the occurrence model
+   --  does not yet prove ordered FIFO sequences.
    procedure Yield (S : in out Scheduler)
    with
-     Pre  => Is_Initialized (S),
+     Pre  => Is_Initialized (S)
+     and then Representation_Valid (S)
+     and then Scalar_Scheduler_Valid (S)
+     and then Running_Has_Free_Slot (S)
+     and then Has_Task (Current_Task (S))
+     and then State_Of (S, To_Task_Id (Current_Task (S))) = Running,
      Post => Is_Initialized (S)
-     and then Current_Task (S) = Current_Task (S)'Old
-     and then Representation_Valid (S) = Representation_Valid (S)'Old;
+     and then Representation_Valid (S)
+     and then Scalar_Scheduler_Valid (S)
+     and then Running_Has_Free_Slot (S)
+     and then Has_Task (Current_Task (S))
+     and then State_Of (S, To_Task_Id (Current_Task (S))) = Running
+     and then Ready_Nodes (S) = Ready_Nodes (S)'Old
+     and then Free_Nodes (S) = Free_Nodes (S)'Old
+     and then Total_Ready_List_Length (S) =
+                Total_Ready_List_Length (S)'Old
+     and then Free_List_Length (S) = Free_List_Length (S)'Old
+     and then (if Current_Task (S) /= Current_Task (S)'Old then
+                 State_Of (S, To_Task_Id (Current_Task (S)'Old)) = Ready)
+     and then (for all Other in Task_Id =>
+                 (if Other /= To_Task_Id (Current_Task (S)'Old)
+                    and then Other /= To_Task_Id (Current_Task (S))
+                  then State_Of (S, Other) = Copy_States (S)'Old (Other)));
 
-   --  Skeleton: does not yet remove a ready-list head.
+   --  Dispatch the highest-priority ready head, or remain idle.
+   --  Queue nodes represent READY membership only; the selected task
+   --  occupies Current and consumes no ready node.
    procedure Select_Next (S : in out Scheduler)
    with
-     Pre  => Is_Initialized (S),
+     Pre  => Is_Initialized (S)
+     and then Representation_Valid (S)
+     and then Scalar_Scheduler_Valid (S)
+     and then Running_Has_Free_Slot (S)
+     and then Current_Task (S) = No_Task,
      Post => Is_Initialized (S)
-     and then Current_Task (S) = Current_Task (S)'Old
-     and then Representation_Valid (S) = Representation_Valid (S)'Old;
+     and then Representation_Valid (S)
+     and then Scalar_Scheduler_Valid (S)
+     and then Running_Has_Free_Slot (S)
+     and then (if Ready_Nodes (S)'Old = 0 then
+        Current_Task (S) = No_Task
+        and then Ready_Nodes (S) = Ready_Nodes (S)'Old
+        and then Free_Nodes (S) = Free_Nodes (S)'Old
+        and then Total_Ready_List_Length (S) =
+                   Total_Ready_List_Length (S)'Old
+        and then Free_List_Length (S) = Free_List_Length (S)'Old
+        and then (for all Id in Task_Id =>
+                    State_Of (S, Id) = Copy_States (S)'Old (Id))
+        and then (for all P in Priority =>
+                    Ready_List_Length (S, P) =
+                      Copy_Ready_Lengths (S)'Old (P))
+      else
+        Has_Task (Current_Task (S))
+        and then State_Of (S, To_Task_Id (Current_Task (S))) = Running
+        and then Ready_Nodes (S) = Ready_Nodes (S)'Old - 1
+        and then Free_Nodes (S) = Free_Nodes (S)'Old + 1
+        and then Total_Ready_List_Length (S) =
+                   Total_Ready_List_Length (S)'Old - 1
+        and then Free_List_Length (S) = Free_List_Length (S)'Old + 1
+        and then (for some P in Priority =>
+                    Copy_Ready_Lengths (S)'Old (P) > 0
+                    and then Ready_List_Length (S, P) =
+                               Copy_Ready_Lengths (S)'Old (P) - 1
+                    and then (for all Q in Priority =>
+                                (if Q > P then
+                                   Copy_Ready_Lengths (S)'Old (Q) = 0)
+                                and then
+                                (if Q /= P then
+                                   Ready_List_Length (S, Q) =
+                                     Copy_Ready_Lengths (S)'Old (Q))))
+        and then (for all Other in Task_Id =>
+                    (if Other /= To_Task_Id (Current_Task (S)) then
+                       State_Of (S, Other) = Copy_States (S)'Old (Other))));
 
-   --  Skeleton: forwards to Select_Next only.
+   --  Idle: dispatch with Select_Next. Running: preempt only when a
+   --  strictly higher-priority ready head exists. Equal priority does
+   --  not preempt; those tasks rotate only through Yield.
+   --  The selected identity may coincide with the old Current only if a
+   --  duplicate Task_Id exists on a higher list; uniqueness is deferred.
    procedure Schedule (S : in out Scheduler)
    with
-     Pre  => Is_Initialized (S),
+     Pre  => Is_Initialized (S)
+     and then Representation_Valid (S)
+     and then Scalar_Scheduler_Valid (S)
+     and then Running_Has_Free_Slot (S),
      Post => Is_Initialized (S)
-     and then Current_Task (S) = Current_Task (S)'Old
-     and then Representation_Valid (S) = Representation_Valid (S)'Old;
+     and then Representation_Valid (S)
+     and then Scalar_Scheduler_Valid (S)
+     and then Running_Has_Free_Slot (S)
+     and then (if Has_Task (Current_Task (S)) then
+                 State_Of (S, To_Task_Id (Current_Task (S))) = Running),
+     Contract_Cases =>
+       (Current_Task (S) = No_Task and then Ready_Nodes (S) = 0 =>
+          Current_Task (S) = No_Task
+          and then Ready_Nodes (S) = Ready_Nodes (S)'Old
+          and then Free_Nodes (S) = Free_Nodes (S)'Old
+          and then (for all Id in Task_Id =>
+                      State_Of (S, Id) = Copy_States (S)'Old (Id)),
+        Current_Task (S) = No_Task and then Ready_Nodes (S) > 0 =>
+          Has_Task (Current_Task (S))
+          and then Ready_Nodes (S) = Ready_Nodes (S)'Old - 1
+          and then Free_Nodes (S) = Free_Nodes (S)'Old + 1,
+        Has_Task (Current_Task (S))
+          and then No_Ready_Above
+                     (Copy_Ready_Lengths (S),
+                      Priority_Of (S, To_Task_Id (Current_Task (S)))) =>
+          Current_Task (S) = Current_Task (S)'Old
+          and then Ready_Nodes (S) = Ready_Nodes (S)'Old
+          and then Free_Nodes (S) = Free_Nodes (S)'Old
+          and then (for all Id in Task_Id =>
+                      State_Of (S, Id) = Copy_States (S)'Old (Id)),
+        others =>
+          Has_Task (Current_Task (S))
+          and then Ready_Nodes (S) = Ready_Nodes (S)'Old
+          and then Free_Nodes (S) = Free_Nodes (S)'Old
+          and then (if Current_Task (S) /= Current_Task (S)'Old then
+                      State_Of
+                        (S, To_Task_Id (Current_Task (S)'Old)) = Ready));
 
 private
 
@@ -233,6 +383,9 @@ private
    function State_Of (S : Scheduler; Id : Task_Id) return Task_State
    is (S.States (Id));
 
+   function Priority_Of (S : Scheduler; Id : Task_Id) return Priority
+   is (S.Priorities (Id));
+
    function Has_Free_Node (S : Scheduler) return Boolean
    is (S.Free_Head /= null);
 
@@ -242,7 +395,25 @@ private
    function Ready_Nodes (S : Scheduler) return Node_Count
    is (S.Ready_Node_Count);
 
-   type Length_Map is array (Priority) of Big_Natural;
+   --  REQ-SCHED-001 at the scalar Current/States layer. Distinct from
+   --  pointer Representation_Valid: this does not mention queue nodes.
+   function Scalar_Scheduler_Valid (S : Scheduler) return Boolean
+   is ((if S.Current = No_Task then
+          (for all Id in Task_Id => S.States (Id) /= Running)
+        else
+          S.States (To_Task_Id (S.Current)) = Running
+          and then (for all Id in Task_Id =>
+                      (if Id /= To_Task_Id (S.Current) then
+                         S.States (Id) /= Running))));
+
+   --  Counter-level capacity: a Running task is not on a ready list, so
+   --  Ready_Node_Count cannot be Max_Tasks. Combined with
+   --  Representation_Valid this yields Has_Free_Node via the existing
+   --  free-node lemma. Not a public Yield/Schedule precondition.
+   function Running_Has_Free_Slot (S : Scheduler) return Boolean
+   is ((if Has_Task (S.Current) then S.Ready_Node_Count < Max_Tasks));
+
+   subtype Length_Map is Ready_Length_Map;
 
    function Sum (Values : Length_Map) return Big_Natural
    is (Values (0) + Values (1) + Values (2) + Values (3)
@@ -262,6 +433,20 @@ private
 
    function Total_Ready_List_Length (S : Scheduler) return Big_Natural
    is (Sum (Ready_Lengths (S)));
+
+   function Ready_List_Length (S : Scheduler; P : Priority) return Big_Natural
+   is (List_Length (S.Heads (P)));
+
+   function Copy_States (S : Scheduler) return Task_State_Map
+   is (S.States);
+
+   function Copy_Ready_Lengths (S : Scheduler) return Ready_Length_Map
+   is (Ready_Lengths (S));
+
+   function No_Ready_Above
+     (Lengths : Ready_Length_Map; Bound : Priority) return Boolean
+   is (for all P in Priority =>
+         (if P > Bound then Lengths (P) = 0));
 
    function Ready_Occurrences (S : Scheduler; Id : Task_Id)
      return Big_Natural
@@ -288,6 +473,64 @@ private
                   To_Big_Integer (S.Ready_Node_Count)
        and then S.Free_Node_Count + S.Ready_Node_Count = Max_Tasks
        and then All_Ready_Lists_Valid (S));
+
+   --  A non-null owned head has mathematical length at least one.
+   procedure Lemma_Nonempty_List_Length (Head : access constant Ready_Node)
+   with Ghost,
+     Pre  => Head /= null,
+     Post => List_Length (Head) > 0;
+
+   --  A null head has mathematical length zero.
+   procedure Lemma_Empty_List_Length (Head : access constant Ready_Node)
+   with Ghost,
+     Pre  => Head = null,
+     Post => List_Length (Head) = 0;
+
+   --  Bounded scan of the eight ready heads, highest Priority first.
+   --  Found is True only when Heads(Selected) is non-null and every
+   --  strictly higher priority is empty. No bitmap is introduced.
+   procedure Find_Highest_Ready
+     (S        : Scheduler;
+      Found    : out Boolean;
+      Selected : out Priority)
+   with
+     Pre  => S.Initialized,
+     Post => (if Found then
+                S.Heads (Selected) /= null
+                and then List_Length (S.Heads (Selected)) > 0
+                and then (for all Q in Priority =>
+                            (if Q > Selected then
+                               S.Heads (Q) = null
+                               and then List_Length (S.Heads (Q)) = 0))
+              else
+                (for all Q in Priority =>
+                   S.Heads (Q) = null
+                   and then List_Length (S.Heads (Q)) = 0));
+
+   --  Translate a completed priority scan into the compact
+   --  No_Ready_Above length predicate used by Schedule.
+   procedure Lemma_Search_No_Ready_Above
+     (S        : Scheduler;
+      Found    : Boolean;
+      Selected : Priority;
+      Bound    : Priority)
+   with Ghost,
+     Pre  => S.Initialized
+     and then (if Found then
+                 S.Heads (Selected) /= null
+                 and then List_Length (S.Heads (Selected)) > 0
+                 and then (for all Q in Priority =>
+                             (if Q > Selected then
+                                S.Heads (Q) = null
+                                and then List_Length (S.Heads (Q)) = 0))
+               else
+                 (for all Q in Priority =>
+                    S.Heads (Q) = null
+                    and then List_Length (S.Heads (Q)) = 0)),
+     Post => (if not Found or else Selected <= Bound then
+                No_Ready_Above (Copy_Ready_Lengths (S), Bound)
+              else
+                not No_Ready_Above (Copy_Ready_Lengths (S), Bound));
 
    --  Allocate Max_Tasks nodes onto Head. Head is a local owner so the
    --  scheduler record is not part of the allocation-loop VCs.

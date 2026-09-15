@@ -24,24 +24,34 @@ and `Tail` because the links are IDs, not writable aliases.
 
 ## Current status
 
-The pointer scheduler now has a proved ownership-safe linked-list core:
-fixed free-node pool, O(1) acquire/release/head-remove, and O(N) tail
-append via an anonymous access borrower. `Make_Ready` is real only in the
-pointer scheduler. Its `Block`, `Yield`, `Select_Next`, and `Schedule`
-are intentionally representation-preserving no-op skeletons. All indexed
-queue operations (including `Make_Ready`) are likewise no-op skeletons;
-`Initialize` remains real in both packages.
+The pointer scheduler now implements the real behavioral transitions on
+the proved list model. Queue nodes represent READY membership only.
+Persistent pointer roots remain `Free_Head` and `Heads (Priority)`.
+The running task occupies `Current` with scalar state `Running` and owns
+no ready node.
 
-This temporary scaffolding prevents unfinished public operations from
-creating states that already violate the future Gold invariants, such as
-Ready state without queue membership or duplicate ready entries after
-`Make_Ready`, `Block`, `Make_Ready`. Pointer `Block` leaves the task Ready,
-so a second `Make_Ready` for that task still fails its precondition.
-The next feature task will implement full pointer scheduler transitions.
-The pointer ghost representation model now proves actual list lengths,
-valid node IDs, occurrence preservation, and pool accounting. Behavioral
-transitions and the remaining Gold state/membership invariants are deferred.
-Indexed queues remain unimplemented.
+- `Initialize` allocates the 16-node pool once.
+- `Make_Ready` acquires a free node and appends at the ready tail.
+- `Block` blocks the currently running task; it does not remove an
+  arbitrary ready node.
+- `Select_Next` scans the eight priorities high-to-low, consumes the
+  highest nonempty ready head, and returns that node to the free list.
+- `Yield` requeues Current at the tail of its own priority, then
+  dispatches with `Select_Next`.
+- `Schedule` dispatches when idle and preempts only for a strictly
+  higher ready priority. Equal-priority tasks rotate only through Yield.
+
+Priority lookup is O(P) with P=8 fixed. Tail insertion remains O(N).
+There is no allocation after `Initialize`. Indexed scheduler operations
+remain representation-preserving skeletons.
+
+The pointer ghost representation still proves list lengths, valid node
+IDs, occurrence preservation, and pool accounting. A separate scalar
+predicate `Scalar_Scheduler_Valid` proves at most one Running task and
+that `Current` identifies it. SPARK ownership still does not prove
+Task_Id uniqueness across distinct nodes. Ordered FIFO sequences are
+not in the occurrence model; tail insertion is an implementation
+property pending ordered ghost modeling.
 
 Shared bounds are static: 16 tasks, 8 priorities, static identities,
 no dynamic creation after initialization.
@@ -73,13 +83,15 @@ alr exec -- gnatprove -P spark_rtos_schedulers.gpr --mode=prove
 ```
 
 The project uses GNATprove proof level 2 for ownership/framing checks.
-All 253 checks pass (zero unproved or justified checks). All scheduler
+All 433 checks pass (zero unproved or justified checks). All scheduler
 units are analyzed in SPARK without suppressed checks or proof-silencing
-annotations. This proves the current contracts, not the future Gold
-scheduler invariants.
+annotations. This proves the current contracts, including the scalar
+Running/Current invariant and highest-nonempty-priority selection at the
+ready-head model. It does not claim full Gold completion of
+REQ-SCHED-001 through REQ-SCHED-008.
 
 The build currently reports that the standard big-integer package is an
 Ada 2022 unit under the existing compiler mode. Proof emits informational
-messages for three statically unrolled ghost loops. The checked
+messages for four statically unrolled ghost loops. The checked
 `At_End_Borrow` annotation supports tail-append model invariants; it does
 not suppress proof checks.

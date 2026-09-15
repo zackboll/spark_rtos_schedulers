@@ -23,9 +23,11 @@ The public operations are the same in both scheduler packages:
 - `Select_Next`
 - `Schedule`
 
-The pointer scheduler now has a proved ownership-safe linked-list
-core. Ready-queue *scheduler* semantics (block, yield, select) are still
-skeletons; Gold integrity invariants are not yet attached.
+The pointer scheduler now implements the real behavioral transitions on
+the proved ownership-safe linked-list core. Queue nodes represent READY
+membership only. The running task occupies `Current` and owns no ready
+node. Gold completion is still partial: scalar Current/Running is proved,
+but Task_Id uniqueness and ordered FIFO remain deferred.
 
 ## The SPARK ownership question
 
@@ -68,12 +70,30 @@ Heads (P) -> Node -> Node -> ... -> Node
 ```
 
 A node is always on exactly one of those chains, or is temporarily owned
-by a local named `Node_Access` while it is being moved. `Make_Ready`
-exercises acquire + tail-append. `Block`, `Yield`, `Select_Next`, and
-`Schedule` remain representation-preserving no-op skeletons.
-`Acquire_Node` calls `Remove_Ready_Head`;
-`Release_Node` is proved independently but is not yet called by a public
-operation. Counters are updated by `Make_Ready`, not the list primitives.
+by a local named `Node_Access` while it is being moved. There is still no
+persistent Tail, Current_Node, back pointer, parent pointer, or
+task-table pointer.
+
+Public pointer operations:
+
+- `Make_Ready` acquires a free node and appends at the ready tail.
+- `Block` marks the currently running task Blocked and clears Current.
+  It does not remove an arbitrary ready node from the middle of a list.
+- `Select_Next` scans the eight priorities from highest to lowest,
+  removes the highest nonempty ready head, sets that task Running, and
+  releases the detached node to `Free_Head`.
+- `Yield` requeues Current at the tail of its own priority, then
+  dispatches with `Select_Next`.
+- `Schedule` dispatches when idle. If a task is already running, it
+  preempts only when a strictly higher-priority ready head exists.
+  Equal-priority tasks rotate only through Yield.
+
+Priority lookup is O(P) with P=8 fixed. Tail insertion remains O(N)
+because there is no stored Tail. `Acquire_Node` calls `Remove_Ready_Head`;
+`Release_Node` is used by `Select_Next`. Counters are updated by the
+public operations, not the list primitives. Accounting remains
+`Free_Node_Count + Ready_Node_Count = Max_Tasks` at stable public
+boundaries.
 
 Initialization requires `Is_Virgin`, preventing overwrite of an existing
 pool. Its private `Allocate_Pool` helper starts with a null local owner
@@ -164,9 +184,13 @@ and free/valid-ID predicates; an ordered sequence model remains future work.
 `Representation_Valid` ties the actual free-chain length to
 `Free_Node_Count`, sums all eight ready-chain lengths into
 `Ready_Node_Count`, requires their sum to be 16, and requires free IDs to
-be `No_Task` and ready IDs to be valid. `Initialize` establishes it and
-`Make_Ready` preserves it. The behavioral skeletons explicitly preserve
-its truth value without strengthening their initialization preconditions.
+be `No_Task` and ready IDs to be valid. `Initialize` establishes it;
+`Make_Ready`, `Block`, `Select_Next`, `Yield`, and `Schedule` preserve it.
+
+A separate scalar predicate `Scalar_Scheduler_Valid` encodes REQ-SCHED-001:
+`Current = No_Task` iff no task is Running, and if `Current = T` then
+`State(T) = Running` and every other task is not Running. This is kept
+logically distinct from pointer `Representation_Valid`.
 
 Tail append retains the original anonymous borrower, reborrow, and
 structural loop variant. Ghost loop invariants relate the eventual whole
@@ -175,10 +199,15 @@ membership. The ghost identity function `At_End` uses GNATprove's
 `At_End_Borrow` annotation to express these pledges. This is a checked
 borrow-modeling annotation, not proof suppression or an assumption.
 
-Scheduler behavior remains deferred until the next task. The proved
-free-node lemma derives availability from representation validity and
-`Ready_Node_Count < Max_Tasks`; deriving that bound from a Running task
-still requires state/membership and uniqueness reasoning.
+`Lemma_Free_Node_Available` derives a non-null free head from
+representation validity and `Ready_Node_Count < Max_Tasks`. Yield and
+Schedule do not take a public `Has_Free_Node` precondition. When Current
+identifies a Running task, `Running_Has_Free_Slot` supplies the
+counter-level bound, and the existing lemma converts it to a free node.
+That slot is a capacity fact, not a uniqueness proof: SPARK ownership
+still does not prove that two distinct nodes cannot store the same
+`Task_Id`. Ordered FIFO remains an implementation property of tail
+insertion pending an ordered ghost sequence model.
 
 ## Indexed scheduler
 
@@ -218,10 +247,12 @@ Both packages expose a limited private `Scheduler` object rather than
 hidden package state. That keeps the comparison aligned and gives the
 pointer model a single owner for its heap lists. Scheduler objects are
 initialized with a complete `Task_Priorities` map; every `Task_Id` then
-exists in `Dormant`. Only pointer `Make_Ready` currently changes this state.
+exists in `Dormant`. Pointer `Make_Ready`, `Block`, `Select_Next`,
+`Yield`, and `Schedule` now change this state. Indexed operations other
+than `Initialize` remain no-ops.
 
 Gold-level integrity properties for these structures are listed in
-`docs/proof_strategy.md`. They are not yet attached as SPARK invariants.
-The pointer package currently proves the ownership foundation (moves,
-borrows, reborrows, and allocation-free list operations), not Gold
-scheduler integrity.
+`docs/proof_strategy.md`. The pointer package now proves the ownership
+foundation plus the scalar Current/Running invariant and highest-priority
+ready-head selection. It is not Gold-complete: uniqueness, Ready-state
+cross-model membership, and ordered FIFO remain deferred.
