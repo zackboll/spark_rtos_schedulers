@@ -4,4 +4,5 @@
 /config/
 gnatprove/
 /gnatprove-*.txt
+/artifacts/
 

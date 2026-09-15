@@ -1,5 +1,11 @@
 # SPARK RTOS Schedulers
 
+[![SPARK Verification](https://github.com/zackboll/spark_rtos_schedulers/actions/workflows/spark.yml/badge.svg?branch=main&event=push)](https://github.com/zackboll/spark_rtos_schedulers/actions/workflows/spark.yml)
+
+This native GitHub Actions badge displays the latest applicable push-workflow
+status on `main`. It is workflow status, not evidence that every intended
+scheduler requirement has been formalized.
+
 Educational SPARK models of a single-CPU fixed-priority preemptive
 scheduler. This is a formal-verification experiment, **not** a
 production RTOS: there is no context switch, interrupt handling, SMP,
@@ -137,14 +143,13 @@ meets its current local contracts, not yet Gold reachability.
 
 ```
 alr build
-alr exec -- gnatprove -P spark_rtos_schedulers.gpr --mode=prove
+alr -n exec -- gnatprove -P spark_rtos_schedulers.gpr -U --mode=all --level=2 --checks-as-errors=on --report=all --output=brief --output-header
 ```
 
-The project uses GNATprove proof level 2 for ownership/framing checks.
-The current whole-project GNATprove run discharges 894/894 checks
-(zero unproved, zero justified, zero flow errors). All scheduler units
-are analyzed in SPARK without suppressed checks or proof-silencing
-annotations.
+The project uses GNATprove proof level 2 for ownership/framing checks. Current
+counts are reported by each run rather than hardcoded here. See
+[`docs/ci.md`](docs/ci.md) for the strict proof gate, downloadable evidence,
+and local reproduction instructions.
 
 The pointer scheduler meets the project's documented SPARK Gold
 integrity target for REQ-SCHED-001 through REQ-SCHED-008. The indexed

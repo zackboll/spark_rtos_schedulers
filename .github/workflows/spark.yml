@@ -1,0 +1,79 @@
+name: SPARK Verification
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  spark_proof:
+    name: SPARK / GNATprove
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up pinned Alire and Ada toolchain
+        uses: alire-project/setup-alire@fc4c8ce471aa30b3af0d39ce15add1ee9eaf28f2 # v6.0.0
+        with:
+          version: "2.1.1"
+          toolchain: "gnat_native=16.1.0 gprbuild=26.0.1"
+          cache: true
+
+      - name: Test strict report gate
+        run: python3 -m unittest -v tests/ci/test_spark_report.py
+
+      - name: Verify native checks-as-errors behavior
+        run: scripts/ci/test_native_checks_as_errors.sh
+
+      - name: Run complete SPARK analysis and gate results
+        id: proof
+        run: python3 scripts/ci/spark_report.py run --artifact-dir artifacts/spark
+
+      - name: Publish fallback job summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          if [[ -x scripts/ci/ensure_summary.sh ]]; then
+            scripts/ci/ensure_summary.sh artifacts/spark
+          elif [[ ! -f artifacts/spark/summary.md ]]; then
+            mkdir -p artifacts/spark
+            printf '%s\n' \
+              '# SPARK Verification' '' \
+              '**Result: FAIL — proof not completed**' '' \
+              'Checkout failed before repository reporting code was available.' \
+              'Missing analysis is not treated as zero failures.' \
+              | tee artifacts/spark/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload SPARK evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: spark-proof-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/spark/
+          if-no-files-found: warn
+          retention-days: 30
+
+  build:
+    name: Ada / Build
+    needs: spark_proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up pinned Alire and Ada toolchain
+        uses: alire-project/setup-alire@fc4c8ce471aa30b3af0d39ce15add1ee9eaf28f2 # v6.0.0
+        with:
+          version: "2.1.1"
+          toolchain: "gnat_native=16.1.0 gprbuild=26.0.1"
+          cache: true
+
+      - name: Build library
+        run: alr -n build

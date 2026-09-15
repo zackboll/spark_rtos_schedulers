@@ -1,0 +1,25 @@
+=========================
+Summary of SPARK analysis
+=========================
+
+------------------------------------------------------------------------------------------
+SPARK Analysis results        Total         Flow        Interval   Provers   Justified   Unproved
+------------------------------------------------------------------------------------------
+Initialization                    2            2               .         .           .          .
+Run-time Checks                   4            .               1         3           .          .
+Assertions                        .            .               .         .           .          .
+------------------------------------------------------------------------------------------
+Total                         6             2 (33%)     1 (17%)    3 (50%)   .           .
+
+========================
+Detailed analysis report
+========================
+
+Analyzed 2 units
+in unit rtos-indexed_scheduler, 3 subprograms and packages out of 3 analyzed
+  RTOS.Indexed_Scheduler flow analyzed (0 errors, 0 checks, 0 warnings and 0 pragma Assume statements) and proved (3 checks)
+  RTOS.Indexed_Scheduler.Helper_1 flow analyzed (0 errors, 0 checks, 0 warnings and 0 pragma Assume statements) and proved (0 checks)
+  RTOS.Indexed_Scheduler.Helper_2 flow analyzed (0 errors, 0 checks, 0 warnings and 0 pragma Assume statements) and proved (0 checks)
+in unit rtos-pointer_scheduler, 2 subprograms and packages out of 2 analyzed
+  RTOS.Pointer_Scheduler flow analyzed (0 errors, 0 checks, 0 warnings and 0 pragma Assume statements) and proved (3 checks)
+  RTOS.Pointer_Scheduler.Helper flow analyzed (0 errors, 0 checks, 0 warnings and 0 pragma Assume statements) and proved (0 checks)
