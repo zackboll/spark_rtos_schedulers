@@ -26,8 +26,10 @@ The public operations are the same in both scheduler packages:
 The pointer scheduler now implements the real behavioral transitions on
 the proved ownership-safe linked-list core. Queue nodes represent READY
 membership only. The running task occupies `Current` and owns no ready
-node. Gold completion is still partial: scalar Current/Running is proved,
-but Task_Id uniqueness and ordered FIFO remain deferred.
+node. The central invariant `Scheduler_Valid` composes representation,
+scalar Current/Running, ready-membership uniqueness, and queue-priority
+consistency. SPARK Gold integrity for REQ-SCHED-001 through REQ-SCHED-008
+is discharged. Ordered FIFO remains deferred.
 
 ## The SPARK ownership question
 
@@ -204,10 +206,13 @@ representation validity and `Ready_Node_Count < Max_Tasks`. Yield and
 Schedule do not take a public `Has_Free_Node` precondition. When Current
 identifies a Running task, `Running_Has_Free_Slot` supplies the
 counter-level bound, and the existing lemma converts it to a free node.
-That slot is a capacity fact, not a uniqueness proof: SPARK ownership
-still does not prove that two distinct nodes cannot store the same
-`Task_Id`. Ordered FIFO remains an implementation property of tail
-insertion pending an ordered ghost sequence model.
+
+SPARK ownership proves unique writable node ownership. Semantic Task_Id
+uniqueness is a different property, proved by `Ready_Membership_Valid`:
+`Ready_Occurrences (S, T)` is 1 if `State(T) = Ready` and 0 otherwise.
+That excludes duplicates within one list and the same identity under two
+heads. Ordered FIFO remains an implementation property of tail insertion
+pending an ordered ghost sequence model.
 
 ## Indexed scheduler
 
@@ -253,6 +258,7 @@ than `Initialize` remain no-ops.
 
 Gold-level integrity properties for these structures are listed in
 `docs/proof_strategy.md`. The pointer package now proves the ownership
-foundation plus the scalar Current/Running invariant and highest-priority
-ready-head selection. It is not Gold-complete: uniqueness, Ready-state
-cross-model membership, and ordered FIFO remain deferred.
+foundation, the scalar Current/Running invariant, ready-membership
+uniqueness via `Ready_Occurrences`, queue-priority consistency, and
+highest-configured-priority selection. It meets the project's SPARK Gold
+integrity target. Ordered FIFO/round-robin sequence proof remains deferred.

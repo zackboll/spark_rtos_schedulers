@@ -25,13 +25,16 @@ and `Tail` because the links are IDs, not writable aliases.
 ## Current status
 
 The pointer scheduler now implements the real behavioral transitions on
-the proved list model. Queue nodes represent READY membership only.
-Persistent pointer roots remain `Free_Head` and `Heads (Priority)`.
-The running task occupies `Current` with scalar state `Running` and owns
-no ready node.
+the proved list model and reaches the project's SPARK Gold integrity
+target for REQ-SCHED-001 through REQ-SCHED-008. Queue nodes represent
+READY membership only. Persistent pointer roots remain `Free_Head` and
+`Heads (Priority)`. The running task occupies `Current` with scalar
+state `Running` and owns no ready node.
 
-- `Initialize` allocates the 16-node pool once.
-- `Make_Ready` acquires a free node and appends at the ready tail.
+- `Initialize` allocates the 16-node pool once and establishes
+  `Scheduler_Valid`.
+- `Make_Ready` acquires a free node and appends at the ready tail of
+  the task's configured priority.
 - `Block` blocks the currently running task; it does not remove an
   arbitrary ready node.
 - `Select_Next` scans the eight priorities high-to-low, consumes the
@@ -45,13 +48,17 @@ Priority lookup is O(P) with P=8 fixed. Tail insertion remains O(N).
 There is no allocation after `Initialize`. Indexed scheduler operations
 remain representation-preserving skeletons.
 
-The pointer ghost representation still proves list lengths, valid node
-IDs, occurrence preservation, and pool accounting. A separate scalar
-predicate `Scalar_Scheduler_Valid` proves at most one Running task and
-that `Current` identifies it. SPARK ownership still does not prove
-Task_Id uniqueness across distinct nodes. Ordered FIFO sequences are
-not in the occurrence model; tail insertion is an implementation
-property pending ordered ghost modeling.
+`Scheduler_Valid` composes four proved predicates:
+
+- `Representation_Valid` — owned lists, lengths, and pool accounting
+- `Scalar_Scheduler_Valid` — at most one Running task, identified by Current
+- `Ready_Membership_Valid` — Ready state iff `Ready_Occurrences = 1`
+- `All_Ready_Priorities_Valid` — every node under `Heads(P)` has priority P
+
+SPARK ownership still proves unique writable node ownership, which is
+distinct from Task_Id uniqueness. The latter is proved separately by
+`Ready_Occurrences (S, T) <= 1`. Ordered FIFO sequences are not in the
+occurrence model; tail insertion remains an implementation property.
 
 Shared bounds are static: 16 tasks, 8 priorities, static identities,
 no dynamic creation after initialization.
@@ -83,12 +90,12 @@ alr exec -- gnatprove -P spark_rtos_schedulers.gpr --mode=prove
 ```
 
 The project uses GNATprove proof level 2 for ownership/framing checks.
-All 433 checks pass (zero unproved or justified checks). All scheduler
+All 643 checks pass (zero unproved or justified checks). All scheduler
 units are analyzed in SPARK without suppressed checks or proof-silencing
-annotations. This proves the current contracts, including the scalar
-Running/Current invariant and highest-nonempty-priority selection at the
-ready-head model. It does not claim full Gold completion of
-REQ-SCHED-001 through REQ-SCHED-008.
+annotations. The pointer scheduler now meets the project's documented
+SPARK Gold integrity target for REQ-SCHED-001 through REQ-SCHED-008.
+That is not a claim of full functional correctness, Platinum, timing,
+fairness, or FIFO sequence proof.
 
 The build currently reports that the standard big-integer package is an
 Ada 2022 unit under the existing compiler mode. Proof emits informational

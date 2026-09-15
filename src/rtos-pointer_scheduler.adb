@@ -68,6 +68,141 @@ is
       null;
    end Lemma_Search_No_Ready_Above;
 
+   function Copy_Ready_Occurrences (S : Scheduler)
+     return Ready_Occurrence_Map
+   is
+      Result : Ready_Occurrence_Map := (others => To_Big_Integer (0));
+   begin
+      for T in Task_Id loop
+         Result (T) := Ready_Occurrences (S, T);
+         pragma Loop_Invariant
+           (for all U in Task_Id =>
+              (if U <= T then Result (U) = Ready_Occurrences (S, U)));
+      end loop;
+      return Result;
+   end Copy_Ready_Occurrences;
+
+   procedure Lemma_Null_List_Occurrences (L : access constant Ready_Node) is
+   begin
+      null;
+   end Lemma_Null_List_Occurrences;
+
+   procedure Lemma_Remove_Head_Occurrences
+     (Head : access constant Ready_Node;
+      Id   : Task_Id)
+   is
+   begin
+      null;
+   end Lemma_Remove_Head_Occurrences;
+
+   procedure Lemma_All_At_Priority_Tail
+     (Head       : access constant Ready_Node;
+      P          : Priority;
+      Priorities : Task_Priorities)
+   is
+   begin
+      null;
+   end Lemma_All_At_Priority_Tail;
+
+   procedure Lemma_Priority_Implies_Valid_Ids
+     (L          : access constant Ready_Node;
+      P          : Priority;
+      Priorities : Task_Priorities)
+   is
+   begin
+      if L /= null then
+         Lemma_Priority_Implies_Valid_Ids (L.Next, P, Priorities);
+      end if;
+   end Lemma_Priority_Implies_Valid_Ids;
+
+   procedure Lemma_Occurrence_Implies_Priority
+     (L          : access constant Ready_Node;
+      T          : Task_Id;
+      P          : Priority;
+      Priorities : Task_Priorities)
+   is
+   begin
+      if L /= null then
+         if L.Id = To_Optional (T) then
+            null;
+         else
+            Lemma_Occurrence_Implies_Priority (L.Next, T, P, Priorities);
+         end if;
+      end if;
+   end Lemma_Occurrence_Implies_Priority;
+
+   procedure Lemma_Empty_Heads_Membership (S : Scheduler) is
+   begin
+      for P in Priority loop
+         Lemma_Null_List_Occurrences (S.Heads (P));
+         pragma Loop_Invariant
+           (for all Q in Priority =>
+              (if Q <= P then
+                 All_At_Priority (S.Heads (Q), Q, S.Priorities)
+                 and then All_Ready_Ids_Valid (S.Heads (Q))));
+      end loop;
+   end Lemma_Empty_Heads_Membership;
+
+   procedure Lemma_Ready_Task_At_Configured_Priority
+     (S : Scheduler;
+      T : Task_Id)
+   is
+      Prio : constant Priority := S.Priorities (T);
+   begin
+      for Q in Priority loop
+         if Occurrences (S.Heads (Q), T) > 0 then
+            Lemma_Occurrence_Implies_Priority
+              (S.Heads (Q), T, Q, S.Priorities);
+            pragma Assert (Q = Prio);
+         end if;
+         pragma Loop_Invariant
+           (for all R in Priority =>
+              (if R <= Q and then R /= Prio then
+                 Occurrences (S.Heads (R), T) = To_Big_Integer (0)));
+      end loop;
+   end Lemma_Ready_Task_At_Configured_Priority;
+
+   procedure Lemma_Head_Identity_Ready
+     (S : Scheduler;
+      P : Priority)
+   is
+      Id : Task_Id;
+   begin
+      Lemma_All_At_Priority_Tail (S.Heads (P), P, S.Priorities);
+      Id := To_Task_Id (S.Heads (P).Id);
+      pragma Assert (S.Priorities (Id) = P);
+      pragma Assert (Occurrences (S.Heads (P), Id) > 0);
+      pragma Assert (Ready_Occurrences (S, Id) > 0);
+      pragma Assert (S.States (Id) = RTOS.Types.Ready);
+      Lemma_Ready_Task_At_Configured_Priority (S, Id);
+   end Lemma_Head_Identity_Ready;
+
+   procedure Lemma_Unfold_Ready_Occurrences
+     (S : Scheduler;
+      T : Task_Id)
+   is
+   begin
+      null;
+   end Lemma_Unfold_Ready_Occurrences;
+
+   procedure Lemma_Highest_Ready_Is_Greatest_Priority
+     (S        : Scheduler;
+      Selected : Priority)
+   is
+   begin
+      for T in Task_Id loop
+         if S.States (T) = RTOS.Types.Ready then
+            Lemma_Ready_Task_At_Configured_Priority (S, T);
+            pragma Assert (S.Heads (S.Priorities (T)) /= null);
+            pragma Assert (S.Priorities (T) <= Selected);
+         end if;
+         pragma Loop_Invariant
+           (for all U in Task_Id =>
+              (if U <= T and then S.States (U) = RTOS.Types.Ready then
+                 S.Priorities (U) <= Selected));
+      end loop;
+   end Lemma_Highest_Ready_Is_Greatest_Priority;
+
    function Contents (L : access constant Ready_Node) return Occurrence_Map
    is
       Result : Occurrence_Map := (others => To_Big_Integer (0));
@@ -97,6 +232,21 @@ is
       Head := Node.Next;
       Node.Next := null;
    end Remove_Ready_Head;
+
+   procedure Remove_Ready_Head_At_Priority
+     (Head       : in out Node_Access;
+      Node       : out Node_Access;
+      P          : Priority;
+      Priorities : Task_Priorities)
+   is
+   begin
+      Lemma_All_At_Priority_Tail (Head, P, Priorities);
+      Lemma_Priority_Implies_Valid_Ids (Head, P, Priorities);
+      pragma Assert (All_At_Priority (Head.Next, P, Priorities));
+      Node := Head;
+      Head := Node.Next;
+      Node.Next := null;
+   end Remove_Ready_Head_At_Priority;
 
    procedure Acquire_Node
      (Head : in out Node_Access;
@@ -138,16 +288,18 @@ is
    end Allocate_Pool;
 
    procedure Append_Ready_Tail
-     (Head : in out Node_Access;
-      Node : in out Node_Access)
+     (Head       : in out Node_Access;
+      Node       : in out Node_Access;
+      P          : Priority;
+      Priorities : Task_Priorities)
    is
       Length_Before : constant Big_Natural := List_Length (Head) with Ghost;
-      Valid_Before : constant Boolean := All_Ready_Ids_Valid (Head)
-        with Ghost;
       Inserted : constant Optional_Task_Id := Node.Id with Ghost;
       Contents_Before : constant Occurrence_Map := Contents (Head)
         with Ghost;
    begin
+      Lemma_Priority_Implies_Valid_Ids (Head, P, Priorities);
+
       if Head = null then
          Head := Node;
          Node := null;
@@ -159,8 +311,7 @@ is
                pragma Loop_Variant (Structural => Cursor);
                pragma Loop_Invariant (Cursor /= null);
                pragma Loop_Invariant
-                 (if Has_Task (Inserted)
-                    and then Contains_Id
+                 (if Contains_Id
                       (At_End (Cursor), To_Task_Id (Inserted))
                   then Contains_Id (At_End (Head), To_Task_Id (Inserted)));
                pragma Loop_Invariant
@@ -171,12 +322,15 @@ is
                pragma Loop_Invariant
                  (List_Length (At_End (Head)) = Length_Before
                     - List_Length (Cursor) + List_Length (At_End (Cursor)));
+               pragma Loop_Invariant (All_Ready_Ids_Valid (Cursor));
                pragma Loop_Invariant
-                 (if Valid_Before then All_Ready_Ids_Valid (Cursor));
+                 (All_At_Priority (Cursor, P, Priorities));
                pragma Loop_Invariant
-                 (if Valid_Before and then Has_Task (Inserted)
-                    and then All_Ready_Ids_Valid (At_End (Cursor))
+                 (if All_Ready_Ids_Valid (At_End (Cursor))
                   then All_Ready_Ids_Valid (At_End (Head)));
+               pragma Loop_Invariant
+                 (if All_At_Priority (At_End (Cursor), P, Priorities)
+                  then All_At_Priority (At_End (Head), P, Priorities));
                Cursor := Cursor.Next;
             end loop;
 
@@ -204,6 +358,8 @@ is
       S.Free_Node_Count := Count;
       S.Free_Head := Free;
       S.Initialized := True;
+
+      Lemma_Empty_Heads_Membership (S);
    end Initialize;
 
    procedure Make_Ready (S : in out Scheduler; Id : Task_Id) is
@@ -221,9 +377,10 @@ is
       --  snapshots also make the accounting updates explicit.
       Keep_States (Id) := RTOS.Types.Ready;
 
+      pragma Assert (Ready_Occurrences (S, Id) = To_Big_Integer (0));
       Acquire_Node (S.Free_Head, Node);
       Node.Id := To_Optional (Id);
-      Append_Ready_Tail (S.Heads (Prio), Node);
+      Append_Ready_Tail (S.Heads (Prio), Node, Prio, Keep_Prio);
 
       S.Current := Keep_Curr;
       S.Priorities := Keep_Prio;
@@ -252,9 +409,10 @@ is
       Keep_States (Id) := RTOS.Types.Ready;
 
       Lemma_Free_Node_Available (S);
+      pragma Assert (Ready_Occurrences (S, Id) = To_Big_Integer (0));
       Acquire_Node (S.Free_Head, Node);
       Node.Id := To_Optional (Id);
-      Append_Ready_Tail (S.Heads (Prio), Node);
+      Append_Ready_Tail (S.Heads (Prio), Node, Prio, Keep_Prio);
 
       S.Current := No_Task;
       S.Priorities := Keep_Prio;
@@ -262,6 +420,11 @@ is
       S.Free_Node_Count := Free_Count - 1;
       S.Ready_Node_Count := Ready_Count + 1;
       S.Initialized := Keep_Init;
+
+      pragma Assert (S.Current = No_Task);
+      pragma Assert (S.States (Id) = RTOS.Types.Ready);
+      pragma Assert (Ready_Occurrences (S, Id) = To_Big_Integer (1));
+      pragma Assert (Scheduler_Valid (S));
 
       Select_Next (S);
    end Yield;
@@ -276,6 +439,8 @@ is
       Keep_Init   : constant Boolean := S.Initialized;
       Keep_Prio   : constant Task_Priorities := S.Priorities;
       Keep_States : Task_State_Map := S.States;
+      Occ_Before  : constant Ready_Occurrence_Map :=
+        Copy_Ready_Occurrences (S) with Ghost;
    begin
       if Ready_Count = 0 then
          return;
@@ -284,10 +449,22 @@ is
       Find_Highest_Ready (S, Found, Selected);
       pragma Assert (Found);
       pragma Assert (S.Heads (Selected) /= null);
+      Lemma_Highest_Ready_Is_Greatest_Priority (S, Selected);
+      Lemma_Head_Identity_Ready (S, Selected);
+      Chosen := To_Task_Id (S.Heads (Selected).Id);
+      Lemma_Unfold_Ready_Occurrences (S, Chosen);
+      Lemma_Remove_Head_Occurrences (S.Heads (Selected), Chosen);
+      pragma Assert (Occ_Before (Chosen) = To_Big_Integer (1));
+      pragma Assert (Occurrences (S.Heads (Selected), Chosen) =
+                       To_Big_Integer (1));
 
-      Remove_Ready_Head (S.Heads (Selected), Node);
+      Remove_Ready_Head_At_Priority
+        (S.Heads (Selected), Node, Selected, S.Priorities);
       pragma Assert (Has_Task (Node.Id));
-      Chosen := To_Task_Id (Node.Id);
+      pragma Assert (To_Task_Id (Node.Id) = Chosen);
+      pragma Assert (S.Priorities (Chosen) = Selected);
+      Lemma_Unfold_Ready_Occurrences (S, Chosen);
+      pragma Assert (Ready_Occurrences (S, Chosen) = To_Big_Integer (0));
       Keep_States (Chosen) := Running;
 
       Release_Node (S.Free_Head, Node);
@@ -298,6 +475,12 @@ is
       S.Free_Node_Count := Free_Count + 1;
       S.Ready_Node_Count := Ready_Count - 1;
       S.Initialized := Keep_Init;
+
+      pragma Assert (S.Current = To_Optional (Chosen));
+      pragma Assert (S.States (Chosen) = Running);
+      pragma Assert (S.Priorities (Chosen) = Selected);
+      pragma Assert (Ready_Occurrences (S, Chosen) = To_Big_Integer (0));
+      pragma Assert (Occ_Before (Chosen) = To_Big_Integer (1));
    end Select_Next;
 
    procedure Schedule (S : in out Scheduler) is
@@ -341,9 +524,10 @@ is
       Keep_States (Id) := RTOS.Types.Ready;
 
       Lemma_Free_Node_Available (S);
+      pragma Assert (Ready_Occurrences (S, Id) = To_Big_Integer (0));
       Acquire_Node (S.Free_Head, Node);
       Node.Id := To_Optional (Id);
-      Append_Ready_Tail (S.Heads (Prio), Node);
+      Append_Ready_Tail (S.Heads (Prio), Node, Prio, Keep_Prio);
 
       S.Current := No_Task;
       S.Priorities := Keep_Prio;
@@ -351,6 +535,13 @@ is
       S.Free_Node_Count := Free_Count - 1;
       S.Ready_Node_Count := Ready_Count + 1;
       S.Initialized := Keep_Init;
+
+      pragma Assert (S.Current = No_Task);
+      pragma Assert (S.States (Id) = RTOS.Types.Ready);
+      pragma Assert (Ready_Occurrences (S, Id) = To_Big_Integer (1));
+      pragma Assert (Ready_Membership_Valid (S));
+      pragma Assert (All_Ready_Priorities_Valid (S));
+      pragma Assert (Scheduler_Valid (S));
 
       Select_Next (S);
    end Schedule;
