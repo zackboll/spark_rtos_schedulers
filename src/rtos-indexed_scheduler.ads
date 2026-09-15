@@ -139,6 +139,45 @@ is
    function Indexed_Scheduler_Valid (S : Scheduler) return Boolean
      with Ghost;
 
+   subtype Global_Occurrence_Count is
+     Natural range 0 .. Priority_Count * Max_Tasks;
+
+   type Ready_Length_Map is array (Priority) of Ready_Count_Type;
+   type Ready_Occurrence_Map is array (Task_Id) of Global_Occurrence_Count;
+
+   function All_Ready_Chains_Terminate (S : Scheduler) return Boolean
+     with Ghost;
+   function Ready_Occurrences (S : Scheduler; Id : Task_Id)
+     return Global_Occurrence_Count with Ghost;
+   function Ready_Contains (S : Scheduler; Id : Task_Id) return Boolean
+     with Ghost;
+   function Total_Ready_Chain_Length (S : Scheduler)
+     return Global_Occurrence_Count with Ghost;
+   function Tails_Reachable (S : Scheduler) return Boolean with Ghost;
+   function All_Reachable_Tasks_Ready (S : Scheduler) return Boolean
+     with Ghost;
+   function All_Reachable_Priorities_Valid (S : Scheduler) return Boolean
+     with Ghost;
+
+   function Ready_Membership_Valid (S : Scheduler) return Boolean
+     with Ghost;
+   function Ready_Chain_Count_Valid (S : Scheduler) return Boolean
+     with Ghost;
+   --  Not yet part of the stable behavioral invariant.
+   function Indexed_Reachability_Model_Valid (S : Scheduler) return Boolean
+     with Ghost;
+
+   function Copy_Ready_Occurrences (S : Scheduler) return Ready_Occurrence_Map
+     with Ghost;
+   function Copy_Ready_Lengths (S : Scheduler) return Ready_Length_Map
+     with Ghost;
+
+   procedure Lemma_Local_Reachability (S : Scheduler)
+   with Ghost,
+     Pre => Endpoint_Ready_Valid (S) and then Next_Edges_Valid (S),
+     Post => All_Reachable_Tasks_Ready (S)
+       and then All_Reachable_Priorities_Valid (S);
+
    procedure Initialize
      (S          : out Scheduler;
       Priorities : Task_Priorities)
@@ -152,6 +191,7 @@ is
                  and then Ready_Tail (S, P) = No_Task
                  and then not Priority_Nonempty (S, P))
      and then (for all Id in Task_Id => Next_Link (S, Id) = No_Task)
+      and then Indexed_Reachability_Model_Valid (S)
      and then Indexed_Scheduler_Valid (S);
 
    --  O(1) tail enqueue of Id at its configured priority.
@@ -294,6 +334,588 @@ private
 
    function Is_Initialized (S : Scheduler) return Boolean
    is (S.Initialized);
+
+   --  Fuel, not graph acyclicity, guarantees termination of this model.
+   function Follow
+     (Links : Task_Links; Start : Optional_Task_Id; Steps : Natural)
+      return Optional_Task_Id
+   with Ghost,
+     Pre => Steps <= Max_Tasks,
+     Post => (if Start = No_Task then Follow'Result = No_Task),
+     Subprogram_Variant => (Decreases => Steps);
+
+   function Follow
+     (Links : Task_Links; Start : Optional_Task_Id; Steps : Natural)
+      return Optional_Task_Id
+   is (if Steps = 0 or else Start = No_Task then Start
+       else Follow (Links, Links (To_Task_Id (Start)), Steps - 1));
+
+   --  Sum positions 0 .. Fuel - 1, even for malformed cyclic links.
+   function Length_Prefix
+     (Links : Task_Links; Head : Optional_Task_Id; Fuel : Natural)
+      return Ready_Count_Type
+   with Ghost,
+     Pre => Fuel <= Max_Tasks,
+     Post => Length_Prefix'Result <= Fuel
+       and then (if Head = No_Task then Length_Prefix'Result = 0)
+       and then (if Head /= No_Task and then Fuel > 0 then
+                   Length_Prefix'Result > 0),
+     Subprogram_Variant => (Decreases => Fuel);
+
+   function Length_Prefix
+     (Links : Task_Links; Head : Optional_Task_Id; Fuel : Natural)
+      return Ready_Count_Type
+   is (if Fuel = 0 then 0 else
+         Length_Prefix (Links, Head, Fuel - 1)
+         + (if Follow (Links, Head, Fuel - 1) /= No_Task then 1 else 0));
+
+   function Occurrence_Prefix
+     (Links : Task_Links; Head : Optional_Task_Id; Id : Task_Id;
+      Fuel : Natural) return Ready_Count_Type
+   with Ghost,
+     Pre => Fuel <= Max_Tasks,
+     Post => Occurrence_Prefix'Result <= Fuel
+       and then (if Head = No_Task then Occurrence_Prefix'Result = 0),
+     Subprogram_Variant => (Decreases => Fuel);
+
+   function Occurrence_Prefix
+     (Links : Task_Links; Head : Optional_Task_Id; Id : Task_Id;
+      Fuel : Natural) return Ready_Count_Type
+   is (if Fuel = 0 then 0 else
+         Occurrence_Prefix (Links, Head, Id, Fuel - 1)
+         + (if Follow (Links, Head, Fuel - 1) = To_Optional (Id)
+            then 1 else 0));
+
+   function Chain_Length
+     (Links : Task_Links; Head : Optional_Task_Id) return Ready_Count_Type
+   is (Length_Prefix (Links, Head, Max_Tasks)) with Ghost;
+
+   function Chain_Occurrences
+     (Links : Task_Links; Head : Optional_Task_Id; Id : Task_Id)
+      return Ready_Count_Type
+   is (Occurrence_Prefix (Links, Head, Id, Max_Tasks)) with Ghost;
+
+   function Chain_Terminates
+     (Links : Task_Links; Head : Optional_Task_Id) return Boolean
+   is (Follow (Links, Head, Max_Tasks) = No_Task) with Ghost;
+
+   procedure Lemma_Follow_Null
+     (Links : Task_Links; Steps : Natural)
+   with Ghost,
+     Pre => Steps <= Max_Tasks,
+     Post => Follow (Links, No_Task, Steps) = No_Task,
+     Subprogram_Variant => (Decreases => Steps);
+
+   --  Follow (Start, A + B) resumes from the node at position A.
+   procedure Lemma_Follow_Compose
+     (Links : Task_Links;
+      Start : Optional_Task_Id;
+      A, B  : Natural)
+   with Ghost,
+     Pre => A <= Max_Tasks
+       and then B <= Max_Tasks
+       and then A + B <= Max_Tasks,
+     Post => Follow (Links, Start, A + B) =
+               Follow (Links, Follow (Links, Start, A), B),
+     Subprogram_Variant => (Decreases => A);
+
+   --  Once Follow hits No_Task, later fuel stays No_Task.
+   procedure Lemma_Follow_After_Null
+     (Links : Task_Links;
+      Head  : Optional_Task_Id;
+      K     : Natural;
+      Steps : Natural)
+   with Ghost,
+     Pre => K <= Max_Tasks
+       and then Steps <= Max_Tasks
+       and then K <= Steps
+       and then Follow (Links, Head, K) = No_Task,
+     Post => Follow (Links, Head, Steps) = No_Task;
+
+   --  Changing Next (Changed) does not affect Follow while Changed
+   --  is never used as a step source.
+   function Path_Avoids
+     (Links   : Task_Links;
+      Start   : Optional_Task_Id;
+      Changed : Task_Id;
+      Fuel    : Natural) return Boolean
+   with Ghost,
+     Pre => Fuel <= Max_Tasks,
+     Subprogram_Variant => (Decreases => Fuel);
+
+   function Path_Avoids
+     (Links   : Task_Links;
+      Start   : Optional_Task_Id;
+      Changed : Task_Id;
+      Fuel    : Natural) return Boolean
+   is (if Fuel = 0 or else Start = No_Task then True
+       else Start /= To_Optional (Changed)
+            and then Path_Avoids
+                       (Links,
+                        Links (To_Task_Id (Start)),
+                        Changed,
+                        Fuel - 1));
+
+   procedure Lemma_Follow_Frame
+     (Before, After : Task_Links;
+      Start         : Optional_Task_Id;
+      Changed       : Task_Id;
+      Steps         : Natural)
+   with Ghost,
+     Pre => Steps <= Max_Tasks
+       and then (for all T in Task_Id =>
+                   (if T /= Changed then Before (T) = After (T)))
+       and then Path_Avoids (Before, Start, Changed, Steps),
+     Post => Follow (Before, Start, Steps) = Follow (After, Start, Steps),
+     Subprogram_Variant => (Decreases => Steps);
+
+   --  Prefix length equals the count of non-null Follow positions.
+   procedure Lemma_Length_Prefix_Unfold
+     (Links : Task_Links;
+      Head  : Optional_Task_Id;
+      Fuel  : Natural)
+   with Ghost,
+     Pre => Fuel <= Max_Tasks,
+     Post => Length_Prefix (Links, Head, Fuel) =
+               (if Fuel = 0 then 0
+                else Length_Prefix (Links, Head, Fuel - 1)
+                     + (if Follow (Links, Head, Fuel - 1) /= No_Task
+                        then 1 else 0)),
+     Subprogram_Variant => (Decreases => Fuel);
+
+   procedure Lemma_Occurrence_Prefix_Unfold
+     (Links : Task_Links;
+      Head  : Optional_Task_Id;
+      Id    : Task_Id;
+      Fuel  : Natural)
+   with Ghost,
+     Pre => Fuel <= Max_Tasks,
+     Post => Occurrence_Prefix (Links, Head, Id, Fuel) =
+               (if Fuel = 0 then 0
+                else Occurrence_Prefix (Links, Head, Id, Fuel - 1)
+                     + (if Follow (Links, Head, Fuel - 1) = To_Optional (Id)
+                        then 1 else 0)),
+     Subprogram_Variant => (Decreases => Fuel);
+
+   --  Empty heads contribute no length or occurrences.
+   procedure Lemma_Empty_Chain
+     (Links : Task_Links; Id : Task_Id)
+   with Ghost,
+     Post => Chain_Length (Links, No_Task) = 0
+       and then Chain_Occurrences (Links, No_Task, Id) = 0
+       and then Chain_Terminates (Links, No_Task);
+
+   --  A singleton terminator has length 1 and one occurrence of Id.
+   procedure Lemma_Singleton_Chain
+     (Links : Task_Links; Id : Task_Id)
+   with Ghost,
+     Pre => Links (Id) = No_Task,
+     Post => Chain_Length (Links, To_Optional (Id)) = 1
+       and then Chain_Occurrences (Links, To_Optional (Id), Id) = 1
+       and then Chain_Terminates (Links, To_Optional (Id));
+
+   --  If Follow never uses Changed as a source, length and occurrences
+   --  of that chain are unchanged by rewriting Next (Changed).
+   procedure Lemma_Length_Frame
+     (Before, After : Task_Links;
+      Head          : Optional_Task_Id;
+      Changed       : Task_Id;
+      Fuel          : Natural)
+   with Ghost,
+     Pre => Fuel <= Max_Tasks
+       and then (for all T in Task_Id =>
+                   (if T /= Changed then Before (T) = After (T)))
+       and then Path_Avoids (Before, Head, Changed, Fuel),
+     Post => Length_Prefix (Before, Head, Fuel) =
+               Length_Prefix (After, Head, Fuel)
+       and then Follow (Before, Head, Fuel) = Follow (After, Head, Fuel),
+     Subprogram_Variant => (Decreases => Fuel);
+
+   procedure Lemma_Occurrence_Frame
+     (Before, After : Task_Links;
+      Head          : Optional_Task_Id;
+      Changed       : Task_Id;
+      Id            : Task_Id;
+      Fuel          : Natural)
+   with Ghost,
+     Pre => Fuel <= Max_Tasks
+       and then (for all T in Task_Id =>
+                   (if T /= Changed then Before (T) = After (T)))
+       and then Path_Avoids (Before, Head, Changed, Fuel),
+     Post => Occurrence_Prefix (Before, Head, Id, Fuel) =
+               Occurrence_Prefix (After, Head, Id, Fuel),
+     Subprogram_Variant => (Decreases => Fuel);
+
+   --  Removing the first node shifts Follow by one.
+   procedure Lemma_Follow_Shift
+     (Links : Task_Links;
+      Head  : Optional_Task_Id;
+      Steps : Natural)
+   with Ghost,
+     Pre => Steps < Max_Tasks and then Head /= No_Task,
+     Post => Follow (Links, Head, Steps + 1) =
+               Follow (Links, Links (To_Task_Id (Head)), Steps);
+
+   --  Prefix after the head is the remaining prefix.
+   procedure Lemma_Length_Tail_Prefix
+     (Links : Task_Links;
+      Head  : Optional_Task_Id;
+      Fuel  : Natural)
+   with Ghost,
+     Pre => Fuel <= Max_Tasks and then Head /= No_Task,
+     Post => Length_Prefix (Links, Head, Fuel) =
+               (if Fuel = 0 then 0
+                else 1 + Length_Prefix
+                           (Links, Links (To_Task_Id (Head)), Fuel - 1)),
+     Subprogram_Variant => (Decreases => Fuel);
+
+   procedure Lemma_Occurrence_Tail_Prefix
+     (Links : Task_Links;
+      Head  : Optional_Task_Id;
+      Id    : Task_Id;
+      Fuel  : Natural)
+   with Ghost,
+     Pre => Fuel <= Max_Tasks and then Head /= No_Task,
+     Post => Occurrence_Prefix (Links, Head, Id, Fuel) =
+               (if Fuel = 0 then 0
+                else (if Head = To_Optional (Id) then 1 else 0)
+                     + Occurrence_Prefix
+                         (Links, Links (To_Task_Id (Head)), Id, Fuel - 1)),
+     Subprogram_Variant => (Decreases => Fuel);
+
+   --  Dequeue of a terminating head decreases length by one.
+   procedure Lemma_Dequeue_Length
+     (Links : Task_Links;
+      Head  : Optional_Task_Id)
+   with Ghost,
+     Pre => Head /= No_Task
+       and then Chain_Terminates (Links, Head),
+     Post => Chain_Length (Links, Links (To_Task_Id (Head))) =
+               Chain_Length (Links, Head) - 1
+       and then Chain_Terminates (Links, Links (To_Task_Id (Head)));
+
+   --  Dequeue of a terminating head decreases only that identity.
+   procedure Lemma_Dequeue_Occurrences
+     (Links : Task_Links;
+      Head  : Optional_Task_Id;
+      Id    : Task_Id)
+   with Ghost,
+     Pre => Head /= No_Task
+       and then Chain_Terminates (Links, Head),
+     Post =>
+       (if Head = To_Optional (Id) then
+          Chain_Occurrences (Links, Links (To_Task_Id (Head)), Id) =
+            Chain_Occurrences (Links, Head, Id) - 1
+        else
+          Chain_Occurrences (Links, Links (To_Task_Id (Head)), Id) =
+            Chain_Occurrences (Links, Head, Id));
+
+   --  Path_Avoids is preserved by extra unused fuel.
+   procedure Lemma_Path_Avoids_Shorter
+     (Links   : Task_Links;
+      Start   : Optional_Task_Id;
+      Changed : Task_Id;
+      Fuel    : Natural;
+      Less    : Natural)
+   with Ghost,
+     Pre => Fuel <= Max_Tasks
+       and then Less <= Fuel
+       and then Path_Avoids (Links, Start, Changed, Fuel),
+     Post => Path_Avoids (Links, Start, Changed, Less),
+     Subprogram_Variant => (Decreases => Fuel);
+
+   --  A terminating chain never uses a node after its null terminator.
+   --  Therefore rewriting Next of a node that occurs zero times cannot
+   --  change Follow on that chain.
+   procedure Lemma_Zero_Occurrence_Avoids
+     (Links   : Task_Links;
+      Head    : Optional_Task_Id;
+      Changed : Task_Id;
+      Fuel    : Natural)
+   with Ghost,
+     Pre => Fuel <= Max_Tasks
+       and then Chain_Terminates (Links, Head)
+       and then Chain_Occurrences (Links, Head, Changed) = 0,
+     Post => Path_Avoids (Links, Head, Changed, Fuel),
+     Subprogram_Variant => (Decreases => Fuel);
+
+   --  Once Follow hits No_Task at K, later prefixes are unchanged.
+   procedure Lemma_Unreachable_Link_Frame
+     (Before, After : Task_Links;
+      Head          : Optional_Task_Id;
+      Changed       : Task_Id)
+   with Ghost,
+     Pre => Chain_Terminates (Before, Head)
+       and then Chain_Occurrences (Before, Head, Changed) = 0
+       and then (for all T in Task_Id =>
+                   (if T /= Changed then Before (T) = After (T))),
+     Post => Chain_Terminates (After, Head)
+       and then Chain_Length (After, Head) = Chain_Length (Before, Head)
+       and then (for all K in 0 .. Max_Tasks =>
+                   Follow (After, Head, K) = Follow (Before, Head, K))
+       and then (for all T in Task_Id =>
+                   Chain_Occurrences (After, Head, T) =
+                     Chain_Occurrences (Before, Head, T));
+
+   --  Once Follow hits No_Task at K, later prefixes are unchanged.
+   procedure Lemma_Terminated_Prefix
+     (Links : Task_Links;
+      Head  : Optional_Task_Id;
+      Id    : Task_Id;
+      K     : Natural;
+      Fuel  : Natural)
+   with Ghost,
+     Pre => K <= Max_Tasks
+       and then Fuel <= Max_Tasks
+       and then K <= Fuel
+       and then Follow (Links, Head, K) = No_Task,
+     Post => Length_Prefix (Links, Head, Fuel) = Length_Prefix (Links, Head, K)
+       and then Occurrence_Prefix (Links, Head, Id, Fuel) =
+                  Occurrence_Prefix (Links, Head, Id, K),
+     Subprogram_Variant => (Decreases => Fuel);
+
+   --  A non-null position Fuel - 1 forces every earlier position present.
+   procedure Lemma_Present_Implies_Full
+     (Links : Task_Links;
+      Head  : Optional_Task_Id;
+      Fuel  : Natural)
+   with Ghost,
+     Pre => Fuel <= Max_Tasks
+       and then (if Fuel > 0 then
+                   Follow (Links, Head, Fuel - 1) /= No_Task),
+     Post => Length_Prefix (Links, Head, Fuel) = Fuel,
+     Subprogram_Variant => (Decreases => Fuel);
+
+   procedure Lemma_Short_Chain_Null
+     (Links : Task_Links;
+      Head  : Optional_Task_Id)
+   with Ghost,
+     Pre => Chain_Length (Links, Head) < Max_Tasks,
+     Post => Follow (Links, Head, Max_Tasks - 1) = No_Task;
+
+   --  Tail -> Id -> No_Task is a terminating two-node chain.
+   procedure Lemma_Two_Node_Chain
+     (Links  : Task_Links;
+      First  : Task_Id;
+      Second : Task_Id)
+   with Ghost,
+     Pre => First /= Second
+       and then Links (First) = To_Optional (Second)
+       and then Links (Second) = No_Task,
+     Post => Chain_Terminates (Links, To_Optional (First))
+       and then Chain_Length (Links, To_Optional (First)) = 2
+       and then Chain_Occurrences (Links, To_Optional (First), First) = 1
+       and then Chain_Occurrences (Links, To_Optional (First), Second) = 1
+       and then (for all Other in Task_Id =>
+                   (if Other /= First and then Other /= Second then
+                      Chain_Occurrences
+                        (Links, To_Optional (First), Other) = 0));
+
+   --  Appending a fresh terminator at a reachable Tail increases length
+   --  by one and adds exactly one occurrence of Id. Room for the new
+   --  node is explicit: a 16-position model cannot represent 17 nodes.
+   procedure Lemma_Append_Walk
+     (Before, After : Task_Links;
+      Start         : Optional_Task_Id;
+      Tail          : Task_Id;
+      Id            : Task_Id)
+   with Ghost,
+     Pre => Start /= No_Task
+       and then Chain_Terminates (Before, Start)
+       and then Chain_Length (Before, Start) < Max_Tasks
+       and then Before (Tail) = No_Task
+       and then Chain_Occurrences (Before, Start, Tail) = 1
+       and then Chain_Occurrences (Before, Start, Id) = 0
+       and then Id /= Tail
+       and then After (Tail) = To_Optional (Id)
+       and then After (Id) = No_Task
+       and then (for all T in Task_Id =>
+                   (if T /= Tail then Before (T) = After (T))),
+     Post => Chain_Terminates (After, Start)
+       and then Chain_Length (After, Start) =
+                  Chain_Length (Before, Start) + 1
+        and then Follow (After, Start, Chain_Length (Before, Start)) =
+                   To_Optional (Id)
+       and then Chain_Occurrences (After, Start, Id) = 1
+        and then Chain_Occurrences (After, Start, Tail) = 1
+        and then (for all Other in Task_Id =>
+                    (if Other /= Id then
+                       Chain_Occurrences (After, Start, Other) =
+                         Chain_Occurrences (Before, Start, Other))),
+     Subprogram_Variant => (Decreases => Chain_Length (Before, Start));
+
+   procedure Lemma_Append_At_Tail
+     (Before, After : Task_Links;
+      Head          : Optional_Task_Id;
+      Tail          : Task_Id;
+      Id            : Task_Id)
+   with Ghost,
+     Pre => Head /= No_Task
+       and then Chain_Terminates (Before, Head)
+       and then Chain_Length (Before, Head) < Max_Tasks
+       and then Before (Tail) = No_Task
+       and then Chain_Occurrences (Before, Head, Tail) = 1
+       and then Chain_Occurrences (Before, Head, Id) = 0
+       and then Id /= Tail
+       and then After (Tail) = To_Optional (Id)
+       and then After (Id) = No_Task
+       and then (for all T in Task_Id =>
+                   (if T /= Tail then Before (T) = After (T))),
+     Post => Chain_Terminates (After, Head)
+       and then Chain_Length (After, Head) = Chain_Length (Before, Head) + 1
+        and then Follow (After, Head, Chain_Length (Before, Head)) =
+                   To_Optional (Id)
+       and then Chain_Occurrences (After, Head, Id) = 1
+        and then Chain_Occurrences (After, Head, Tail) = 1
+        and then (for all Other in Task_Id =>
+                    (if Other /= Id then
+                       Chain_Occurrences (After, Head, Other) =
+                         Chain_Occurrences (Before, Head, Other)));
+
+   procedure Lemma_Follow_Priority
+     (S : Scheduler; Head : Optional_Task_Id; P : Priority; Steps : Natural)
+   with Ghost,
+     Pre => Steps <= Max_Tasks and then Next_Edges_Valid (S)
+       and then (if Head /= No_Task then
+                   S.States (To_Task_Id (Head)) = Ready
+                   and then S.Priorities (To_Task_Id (Head)) = P),
+     Post => (if Follow (S.Next, Head, Steps) /= No_Task then
+                S.States (To_Task_Id (Follow (S.Next, Head, Steps))) = Ready
+                and then
+                S.Priorities (To_Task_Id (Follow (S.Next, Head, Steps))) = P),
+     Subprogram_Variant => (Decreases => Steps);
+
+   --  Priority consistency, not injectivity alone, separates queues.
+   --  Without it, two priority slots could contain the same head.
+   procedure Lemma_Distinct_Priorities_Disjoint
+     (S : Scheduler; P, Q : Priority; T : Task_Id)
+   with Ghost,
+     Pre => Endpoint_Ready_Valid (S) and then Next_Edges_Valid (S)
+       and then P /= Q,
+     Post => (if Chain_Occurrences (S.Next, S.Heads (P), T) > 0 then
+                 Chain_Occurrences (S.Next, S.Heads (Q), T) = 0);
+
+   procedure Lemma_Occurrence_Validity
+     (S : Scheduler; P : Priority; T : Task_Id; Fuel : Natural)
+   with Ghost,
+     Pre => Fuel <= Max_Tasks
+       and then Endpoint_Ready_Valid (S) and then Next_Edges_Valid (S),
+     Post => (if Occurrence_Prefix (S.Next, S.Heads (P), T, Fuel) > 0
+              then S.States (T) = Ready and then S.Priorities (T) = P),
+     Subprogram_Variant => (Decreases => Fuel);
+
+   --  Head-reachable termination alone admits disconnected cycles.
+   --  Excluding disconnected Ready cycles also needs stable membership;
+   --  Nonready_Unlinked excludes outgoing edges of non-Ready tasks.
+   function All_Ready_Chains_Terminate (S : Scheduler) return Boolean
+   is (for all P in Priority => Chain_Terminates (S.Next, S.Heads (P)));
+
+   function Occurrences_By_Priority
+     (S : Scheduler; Id : Task_Id) return Ready_Length_Map
+   with Ghost,
+     Post => (for all P in Priority =>
+                Occurrences_By_Priority'Result (P) =
+                  Chain_Occurrences (S.Next, S.Heads (P), Id));
+
+   function Occurrences_By_Priority
+     (S : Scheduler; Id : Task_Id) return Ready_Length_Map
+   is
+     ((0 => Chain_Occurrences (S.Next, S.Heads (0), Id),
+       1 => Chain_Occurrences (S.Next, S.Heads (1), Id),
+       2 => Chain_Occurrences (S.Next, S.Heads (2), Id),
+       3 => Chain_Occurrences (S.Next, S.Heads (3), Id),
+       4 => Chain_Occurrences (S.Next, S.Heads (4), Id),
+       5 => Chain_Occurrences (S.Next, S.Heads (5), Id),
+       6 => Chain_Occurrences (S.Next, S.Heads (6), Id),
+       7 => Chain_Occurrences (S.Next, S.Heads (7), Id)));
+
+   function Ready_Lengths (S : Scheduler) return Ready_Length_Map
+   with Ghost,
+     Post => (for all P in Priority =>
+                Ready_Lengths'Result (P) = Chain_Length (S.Next, S.Heads (P)));
+
+   function Ready_Lengths (S : Scheduler) return Ready_Length_Map
+   is
+     ((0 => Chain_Length (S.Next, S.Heads (0)),
+       1 => Chain_Length (S.Next, S.Heads (1)),
+       2 => Chain_Length (S.Next, S.Heads (2)),
+       3 => Chain_Length (S.Next, S.Heads (3)),
+       4 => Chain_Length (S.Next, S.Heads (4)),
+       5 => Chain_Length (S.Next, S.Heads (5)),
+       6 => Chain_Length (S.Next, S.Heads (6)),
+       7 => Chain_Length (S.Next, S.Heads (7))));
+
+   function Sum (Values : Ready_Length_Map) return Global_Occurrence_Count
+   is (Values (0) + Values (1) + Values (2) + Values (3)
+       + Values (4) + Values (5) + Values (6) + Values (7))
+   with Ghost;
+
+   function Ready_Occurrences (S : Scheduler; Id : Task_Id)
+     return Global_Occurrence_Count
+   is (Sum (Occurrences_By_Priority (S, Id)));
+
+   function Ready_Contains (S : Scheduler; Id : Task_Id) return Boolean
+   is (Ready_Occurrences (S, Id) > 0);
+
+   function Total_Ready_Chain_Length (S : Scheduler)
+     return Global_Occurrence_Count
+   is (Sum (Ready_Lengths (S)));
+
+   function Copy_Ready_Occurrences (S : Scheduler) return Ready_Occurrence_Map
+   is
+     ((1  => Ready_Occurrences (S, 1),
+       2  => Ready_Occurrences (S, 2),
+       3  => Ready_Occurrences (S, 3),
+       4  => Ready_Occurrences (S, 4),
+       5  => Ready_Occurrences (S, 5),
+       6  => Ready_Occurrences (S, 6),
+       7  => Ready_Occurrences (S, 7),
+       8  => Ready_Occurrences (S, 8),
+       9  => Ready_Occurrences (S, 9),
+       10 => Ready_Occurrences (S, 10),
+       11 => Ready_Occurrences (S, 11),
+       12 => Ready_Occurrences (S, 12),
+       13 => Ready_Occurrences (S, 13),
+       14 => Ready_Occurrences (S, 14),
+       15 => Ready_Occurrences (S, 15),
+       16 => Ready_Occurrences (S, 16)));
+
+   function Copy_Ready_Lengths (S : Scheduler) return Ready_Length_Map
+   is (Ready_Lengths (S));
+
+   function Tails_Reachable (S : Scheduler) return Boolean
+   is (for all P in Priority =>
+         (if S.Heads (P) = No_Task then S.Tails (P) = No_Task
+          else S.Tails (P) /= No_Task
+            and then Chain_Occurrences
+              (S.Next, S.Heads (P), To_Task_Id (S.Tails (P))) = 1));
+
+   function All_Reachable_Tasks_Ready (S : Scheduler) return Boolean
+   is (for all P in Priority =>
+         (for all T in Task_Id =>
+            (if Chain_Occurrences (S.Next, S.Heads (P), T) > 0
+             then S.States (T) = Ready)));
+
+   function All_Reachable_Priorities_Valid (S : Scheduler) return Boolean
+   is (for all P in Priority =>
+         (for all T in Task_Id =>
+            (if Chain_Occurrences (S.Next, S.Heads (P), T) > 0
+             then S.Priorities (T) = P)));
+
+   function Ready_Membership_Valid (S : Scheduler) return Boolean
+   is (for all T in Task_Id =>
+         Ready_Occurrences (S, T) = (if S.States (T) = Ready then 1 else 0));
+
+   function Ready_Chain_Count_Valid (S : Scheduler) return Boolean
+   is (Total_Ready_Chain_Length (S) = S.Ready_Count);
+
+   function Indexed_Reachability_Model_Valid (S : Scheduler) return Boolean
+   is (All_Ready_Chains_Terminate (S)
+       and then Tails_Reachable (S)
+       and then All_Reachable_Tasks_Ready (S)
+       and then All_Reachable_Priorities_Valid (S)
+       and then Ready_Membership_Valid (S)
+       and then Ready_Chain_Count_Valid (S));
 
    function Current_Task (S : Scheduler) return Optional_Task_Id
    is (S.Current);
