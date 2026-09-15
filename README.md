@@ -38,7 +38,10 @@ Ready state without queue membership or duplicate ready entries after
 `Make_Ready`, `Block`, `Make_Ready`. Pointer `Block` leaves the task Ready,
 so a second `Make_Ready` for that task still fails its precondition.
 The next feature task will implement full pointer scheduler transitions.
-Indexed queues and Gold scheduler invariants are not implemented yet.
+The pointer ghost representation model now proves actual list lengths,
+valid node IDs, occurrence preservation, and pool accounting. Behavioral
+transitions and the remaining Gold state/membership invariants are deferred.
+Indexed queues remain unimplemented.
 
 Shared bounds are static: 16 tasks, 8 priorities, static identities,
 no dynamic creation after initialization.
@@ -70,7 +73,13 @@ alr exec -- gnatprove -P spark_rtos_schedulers.gpr --mode=prove
 ```
 
 The project uses GNATprove proof level 2 for ownership/framing checks.
-All 113 checks pass (zero unproved or justified checks). All scheduler
+All 253 checks pass (zero unproved or justified checks). All scheduler
 units are analyzed in SPARK without suppressed checks or proof-silencing
 annotations. This proves the current contracts, not the future Gold
 scheduler invariants.
+
+The build currently reports that the standard big-integer package is an
+Ada 2022 unit under the existing compiler mode. Proof emits informational
+messages for three statically unrolled ghost loops. The checked
+`At_End_Borrow` annotation supports tail-append model invariants; it does
+not suppress proof checks.

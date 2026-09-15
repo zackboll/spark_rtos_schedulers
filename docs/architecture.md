@@ -144,6 +144,42 @@ Pointer-operation complexity:
 - append ready tail: O(N)
 - round-robin yield: O(N) once wired
 
+## Pointer verification model
+
+The pointer package now has structurally recursive ghost observations over
+`access constant Ready_Node`: `List_Length`, `All_Free`,
+`All_Ready_Ids_Valid`, `Contains_Id`, and `Occurrences`. Lengths and
+occurrences use mathematical `Big_Natural` values from the standard Ada
+big-integer package (the installed `SPARK.Big_Integers` is its rename).
+No runtime model fields or model allocations are introduced.
+
+Structural recursion follows `Next`; ownership excludes cycles, while
+GNATprove checks every structural termination obligation. Ownership proves
+unique writable ownership of nodes, not uniqueness of stored task IDs.
+The ghost content model proves per-ID occurrence preservation separately.
+`Contents` is a ghost occurrence map, not an ordered sequence model.
+Head-removal contracts preserve the remainder's length, occurrence map,
+and free/valid-ID predicates; an ordered sequence model remains future work.
+
+`Representation_Valid` ties the actual free-chain length to
+`Free_Node_Count`, sums all eight ready-chain lengths into
+`Ready_Node_Count`, requires their sum to be 16, and requires free IDs to
+be `No_Task` and ready IDs to be valid. `Initialize` establishes it and
+`Make_Ready` preserves it. The behavioral skeletons explicitly preserve
+its truth value without strengthening their initialization preconditions.
+
+Tail append retains the original anonymous borrower, reborrow, and
+structural loop variant. Ghost loop invariants relate the eventual whole
+list to the current suffix for length, occurrences, validity, and inserted
+membership. The ghost identity function `At_End` uses GNATprove's
+`At_End_Borrow` annotation to express these pledges. This is a checked
+borrow-modeling annotation, not proof suppression or an assumption.
+
+Scheduler behavior remains deferred until the next task. The proved
+free-node lemma derives availability from representation validity and
+`Ready_Node_Count < Max_Tasks`; deriving that bound from a Running task
+still requires state/membership and uniqueness reasoning.
+
 ## Indexed scheduler
 
 Package: `RTOS.Indexed_Scheduler`.

@@ -2,6 +2,41 @@ package body RTOS.Pointer_Scheduler
   with SPARK_Mode => On
 is
 
+   function Ready_Lengths (S : Scheduler) return Length_Map is
+      Result : Length_Map := (others => To_Big_Integer (0));
+   begin
+      for P in Priority loop
+         Result (P) := List_Length (S.Heads (P));
+      end loop;
+      return Result;
+   end Ready_Lengths;
+
+   function Occurrences_By_Priority (S : Scheduler; Id : Task_Id)
+     return Length_Map
+   is
+      Result : Length_Map := (others => To_Big_Integer (0));
+   begin
+      for P in Priority loop
+         Result (P) := Occurrences (S.Heads (P), Id);
+      end loop;
+      return Result;
+   end Occurrences_By_Priority;
+
+   procedure Lemma_Free_Node_Available (S : Scheduler) is
+   begin
+      null;
+   end Lemma_Free_Node_Available;
+
+   function Contents (L : access constant Ready_Node) return Occurrence_Map
+   is
+      Result : Occurrence_Map := (others => To_Big_Integer (0));
+   begin
+      for Id in Task_Id loop
+         Result (Id) := Occurrences (L, Id);
+      end loop;
+      return Result;
+   end Contents;
+
    procedure Prepend_Node
      (Head : in out Node_Access;
       Node : in out Node_Access)
@@ -52,6 +87,9 @@ is
            (Count = Natural (I - Task_Id'First));
          pragma Loop_Invariant (Count < Max_Tasks);
          pragma Loop_Invariant ((Count = 0) = (Head = null));
+         pragma Loop_Invariant
+           (List_Length (Head) = To_Big_Integer (Count));
+         pragma Loop_Invariant (All_Free (Head));
 
          Head := new Ready_Node'(Id => No_Task, Next => Head);
          Count := Count + 1;
@@ -62,6 +100,12 @@ is
      (Head : in out Node_Access;
       Node : in out Node_Access)
    is
+      Length_Before : constant Big_Natural := List_Length (Head) with Ghost;
+      Valid_Before : constant Boolean := All_Ready_Ids_Valid (Head)
+        with Ghost;
+      Inserted : constant Optional_Task_Id := Node.Id with Ghost;
+      Contents_Before : constant Occurrence_Map := Contents (Head)
+        with Ghost;
    begin
       if Head = null then
          Head := Node;
@@ -73,6 +117,25 @@ is
             while Cursor.Next /= null loop
                pragma Loop_Variant (Structural => Cursor);
                pragma Loop_Invariant (Cursor /= null);
+               pragma Loop_Invariant
+                 (if Has_Task (Inserted)
+                    and then Contains_Id
+                      (At_End (Cursor), To_Task_Id (Inserted))
+                  then Contains_Id (At_End (Head), To_Task_Id (Inserted)));
+               pragma Loop_Invariant
+                 (for all Id in Task_Id =>
+                   Occurrences (At_End (Head), Id) = Contents_Before (Id)
+                     - Occurrences (Cursor, Id)
+                     + Occurrences (At_End (Cursor), Id));
+               pragma Loop_Invariant
+                 (List_Length (At_End (Head)) = Length_Before
+                    - List_Length (Cursor) + List_Length (At_End (Cursor)));
+               pragma Loop_Invariant
+                 (if Valid_Before then All_Ready_Ids_Valid (Cursor));
+               pragma Loop_Invariant
+                 (if Valid_Before and then Has_Task (Inserted)
+                    and then All_Ready_Ids_Valid (At_End (Cursor))
+                  then All_Ready_Ids_Valid (At_End (Head)));
                Cursor := Cursor.Next;
             end loop;
 

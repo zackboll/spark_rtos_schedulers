@@ -18,6 +18,41 @@ until the corresponding queue implementations exist.
 
 ## Integrity requirements
 
+### Current representation-model proof layer
+
+The pointer primitives now prove mathematical length and content effects.
+`Initialize` establishes `Representation_Valid`; `Make_Ready` requires and
+preserves it, proves inserted membership and an occurrence increment,
+and connects both counter updates to actual chain lengths. Existing
+preconditions and counter postconditions are retained. Skeleton operations
+preserve representation validity and remain behaviorally unimplemented.
+
+| Requirement | Current status |
+| --- | --- |
+| REQ-SCHED-001 | Not yet encoded as a scalar running/current invariant |
+| REQ-SCHED-002 | Not yet encoded as running/list exclusion |
+| REQ-SCHED-003 | Partial: ready-node IDs valid; Ready-state relation deferred |
+| REQ-SCHED-004 | Partial: Make_Ready membership and occurrence increment proved; equivalence deferred |
+| REQ-SCHED-005 | Partial: node ownership proved; task-ID uniqueness deferred |
+| REQ-SCHED-006 | Not yet encoded: task priority versus containing queue |
+| REQ-SCHED-007 | Partial: pointer representation/accounting established and preserved |
+| REQ-SCHED-008 | Not yet encoded: selection remains a skeleton |
+
+Recursive ghost list models terminate structurally along owned `Next`
+links. Unique writable node ownership and semantic list-content properties
+are distinct: ownership excludes cycles/aliases but does not exclude two
+nodes with equal task IDs. Occurrence maps preserve multiplicity, not order.
+
+`Lemma_Free_Node_Available` proves that representation validity plus
+`Ready_Nodes < Max_Tasks` implies a non-null free head. It has a checked
+body and no assumptions. The stronger Running-implies-capacity result
+needs the state/membership/uniqueness layer; no artificial Yield capacity
+precondition has been introduced.
+
+The only new GNATprove annotation is `At_End_Borrow` on a ghost identity
+function, for checked tail-traversal pledges. No proof-silencing annotations
+are used. Full scheduler behavior and full Gold completion remain deferred.
+
 ### REQ-SCHED-001
 
 At most one task is Running.
