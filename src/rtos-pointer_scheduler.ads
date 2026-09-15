@@ -89,29 +89,35 @@ is
      and then Free_Nodes (S) = Free_Nodes (S)'Old - 1
      and then Ready_Nodes (S) = Ready_Nodes (S)'Old + 1;
 
-   --  Skeleton: does not yet detach a ready-list node.
+   --  Temporary representation-preserving no-ops until full pointer
+   --  transitions are implemented. No scalar, list, or count is changed.
+   --  Block does not yet detach a ready-list node.
    procedure Block (S : in out Scheduler; Id : Task_Id)
    with
      Pre  => Is_Initialized (S),
-     Post => Is_Initialized (S);
+     Post => Is_Initialized (S)
+     and then Current_Task (S) = Current_Task (S)'Old;
 
    --  Skeleton: does not yet requeue a running task.
    procedure Yield (S : in out Scheduler)
    with
      Pre  => Is_Initialized (S),
-     Post => Is_Initialized (S);
+     Post => Is_Initialized (S)
+     and then Current_Task (S) = Current_Task (S)'Old;
 
    --  Skeleton: does not yet remove a ready-list head.
    procedure Select_Next (S : in out Scheduler)
    with
      Pre  => Is_Initialized (S),
-     Post => Is_Initialized (S);
+     Post => Is_Initialized (S)
+     and then Current_Task (S) = Current_Task (S)'Old;
 
    --  Skeleton: forwards to Select_Next only.
    procedure Schedule (S : in out Scheduler)
    with
      Pre  => Is_Initialized (S),
-     Post => Is_Initialized (S);
+     Post => Is_Initialized (S)
+     and then Current_Task (S) = Current_Task (S)'Old;
 
 private
 

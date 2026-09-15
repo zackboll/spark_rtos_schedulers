@@ -26,9 +26,19 @@ and `Tail` because the links are IDs, not writable aliases.
 
 The pointer scheduler now has a proved ownership-safe linked-list core:
 fixed free-node pool, O(1) acquire/release/head-remove, and O(N) tail
-append via an anonymous access borrower. Indexed queues and Gold
-scheduler invariants are not implemented yet. `Block`, `Yield`,
-`Select_Next`, and `Schedule` in the pointer package remain skeletons.
+append via an anonymous access borrower. `Make_Ready` is real only in the
+pointer scheduler. Its `Block`, `Yield`, `Select_Next`, and `Schedule`
+are intentionally representation-preserving no-op skeletons. All indexed
+queue operations (including `Make_Ready`) are likewise no-op skeletons;
+`Initialize` remains real in both packages.
+
+This temporary scaffolding prevents unfinished public operations from
+creating states that already violate the future Gold invariants, such as
+Ready state without queue membership or duplicate ready entries after
+`Make_Ready`, `Block`, `Make_Ready`. Pointer `Block` leaves the task Ready,
+so a second `Make_Ready` for that task still fails its precondition.
+The next feature task will implement full pointer scheduler transitions.
+Indexed queues and Gold scheduler invariants are not implemented yet.
 
 Shared bounds are static: 16 tasks, 8 priorities, static identities,
 no dynamic creation after initialization.
@@ -60,7 +70,7 @@ alr exec -- gnatprove -P spark_rtos_schedulers.gpr --mode=prove
 ```
 
 The project uses GNATprove proof level 2 for ownership/framing checks.
-All 97 checks pass (zero unproved or justified checks). All scheduler
+All 113 checks pass (zero unproved or justified checks). All scheduler
 units are analyzed in SPARK without suppressed checks or proof-silencing
 annotations. This proves the current contracts, not the future Gold
 scheduler invariants.

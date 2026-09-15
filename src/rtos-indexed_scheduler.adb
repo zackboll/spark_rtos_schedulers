@@ -18,37 +18,31 @@ is
 
    procedure Make_Ready (S : in out Scheduler; Id : Task_Id) is
    begin
-      --  Indexed enqueue is not implemented in this skeleton.
-      S.States (Id) := Ready;
+      --  Preserve the representation until indexed enqueue is implemented.
+      null;
    end Make_Ready;
 
    procedure Block (S : in out Scheduler; Id : Task_Id) is
    begin
-      --  Indexed dequeue is not implemented in this skeleton.
-      S.States (Id) := Blocked;
-      if S.Current = To_Optional (Id) then
-         S.Current := No_Task;
-      end if;
+      --  Preserve the representation until indexed dequeue is implemented.
+      null;
    end Block;
 
    procedure Yield (S : in out Scheduler) is
    begin
-      --  Same-priority requeue is not implemented in this skeleton.
-      if Has_Task (S.Current) then
-         S.States (To_Task_Id (S.Current)) := Ready;
-         S.Current := No_Task;
-      end if;
+      --  Preserve the representation until same-priority requeue is wired.
+      null;
    end Yield;
 
    procedure Select_Next (S : in out Scheduler) is
    begin
-      --  Highest-priority selection is not implemented. The skeleton
-      --  ready lists are empty, so no task is selected.
-      S.Current := No_Task;
+      --  Preserve the representation until priority selection is wired.
+      null;
    end Select_Next;
 
    procedure Schedule (S : in out Scheduler) is
    begin
+      --  Temporary scaffolding: Select_Next also preserves all state.
       Select_Next (S);
    end Schedule;
 

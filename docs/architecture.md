@@ -70,7 +70,8 @@ Heads (P) -> Node -> Node -> ... -> Node
 A node is always on exactly one of those chains, or is temporarily owned
 by a local named `Node_Access` while it is being moved. `Make_Ready`
 exercises acquire + tail-append. `Block`, `Yield`, `Select_Next`, and
-`Schedule` remain skeletons. `Acquire_Node` calls `Remove_Ready_Head`;
+`Schedule` remain representation-preserving no-op skeletons.
+`Acquire_Node` calls `Remove_Ready_Head`;
 `Release_Node` is proved independently but is not yet called by a public
 operation. Counters are updated by `Make_Ready`, not the list primitives.
 
@@ -147,6 +148,10 @@ Pointer-operation complexity:
 
 Package: `RTOS.Indexed_Scheduler`.
 
+Only `Initialize` is real. `Make_Ready`, `Block`, `Yield`, `Select_Next`,
+and `Schedule` are temporary representation-preserving no-ops; they do
+not change task states or queue links.
+
 This representation keeps linked-queue behavior but does not use Ada
 access types for queue membership. `Head`, `Tail`, and `Next` contain
 `Optional_Task_Id` values:
@@ -177,7 +182,7 @@ Both packages expose a limited private `Scheduler` object rather than
 hidden package state. That keeps the comparison aligned and gives the
 pointer model a single owner for its heap lists. Scheduler objects are
 initialized with a complete `Task_Priorities` map; every `Task_Id` then
-exists in `Dormant` until `Make_Ready` is used.
+exists in `Dormant`. Only pointer `Make_Ready` currently changes this state.
 
 Gold-level integrity properties for these structures are listed in
 `docs/proof_strategy.md`. They are not yet attached as SPARK invariants.

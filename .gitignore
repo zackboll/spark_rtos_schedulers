@@ -3,5 +3,5 @@
 /alire/
 /config/
 gnatprove/
-gnatprove-run.txt
+/gnatprove-*.txt
 

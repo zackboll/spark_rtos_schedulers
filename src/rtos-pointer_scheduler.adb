@@ -130,33 +130,21 @@ is
    end Make_Ready;
 
    procedure Block (S : in out Scheduler; Id : Task_Id) is
-      Keep : constant Boolean := S.Initialized;
    begin
-      --  Skeleton: ready-list removal is not implemented yet.
-      S.States (Id) := Blocked;
-      if S.Current = To_Optional (Id) then
-         S.Current := No_Task;
-      end if;
-      S.Initialized := Keep;
+      --  Preserve the representation until ready-list removal is wired.
+      null;
    end Block;
 
    procedure Yield (S : in out Scheduler) is
-      Keep : constant Boolean := S.Initialized;
    begin
-      --  Skeleton: round-robin requeue is not implemented yet.
-      if Has_Task (S.Current) then
-         S.States (To_Task_Id (S.Current)) := Ready;
-         S.Current := No_Task;
-      end if;
-      S.Initialized := Keep;
+      --  Preserve the representation until round-robin requeue is wired.
+      null;
    end Yield;
 
    procedure Select_Next (S : in out Scheduler) is
-      Keep : constant Boolean := S.Initialized;
    begin
-      --  Skeleton: highest-priority head removal is not implemented yet.
-      S.Current := No_Task;
-      S.Initialized := Keep;
+      --  Preserve the representation until ready-head selection is wired.
+      null;
    end Select_Next;
 
    procedure Schedule (S : in out Scheduler) is

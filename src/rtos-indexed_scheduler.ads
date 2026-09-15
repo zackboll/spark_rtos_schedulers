@@ -21,6 +21,8 @@ package RTOS.Indexed_Scheduler
   with SPARK_Mode => On
 is
 
+   pragma Unevaluated_Use_Of_Old (Allow);
+
    use RTOS.Types;
 
    type Scheduler is limited private
@@ -41,30 +43,37 @@ is
      Post => Is_Initialized (S)
      and then Current_Task (S) = No_Task;
 
+   --  Temporary representation-preserving skeletons: all operations below
+   --  leave every field unchanged until indexed queues are implemented.
    procedure Make_Ready (S : in out Scheduler; Id : Task_Id)
    with
      Pre  => Is_Initialized (S),
-     Post => Is_Initialized (S);
+     Post => Is_Initialized (S)
+     and then Current_Task (S) = Current_Task (S)'Old;
 
    procedure Block (S : in out Scheduler; Id : Task_Id)
    with
      Pre  => Is_Initialized (S),
-     Post => Is_Initialized (S);
+     Post => Is_Initialized (S)
+     and then Current_Task (S) = Current_Task (S)'Old;
 
    procedure Yield (S : in out Scheduler)
    with
      Pre  => Is_Initialized (S),
-     Post => Is_Initialized (S);
+     Post => Is_Initialized (S)
+     and then Current_Task (S) = Current_Task (S)'Old;
 
    procedure Select_Next (S : in out Scheduler)
    with
      Pre  => Is_Initialized (S),
-     Post => Is_Initialized (S);
+     Post => Is_Initialized (S)
+     and then Current_Task (S) = Current_Task (S)'Old;
 
    procedure Schedule (S : in out Scheduler)
    with
      Pre  => Is_Initialized (S),
-     Post => Is_Initialized (S);
+     Post => Is_Initialized (S)
+     and then Current_Task (S) = Current_Task (S)'Old;
 
 private
 
