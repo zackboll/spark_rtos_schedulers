@@ -265,14 +265,22 @@ class FinalizationTests(unittest.TestCase):
             self.assertIn("no valid fresh native report", markdown)
 
     def test_missing_and_malformed_summary_do_not_fabricate_success(self) -> None:
-        for source in (None, "{"):
+        structurally_malformed = self.data()
+        structurally_malformed["sarif"] = {"valid": True}
+        wrong_container = self.data()
+        wrong_container["identity"] = []
+        for source in (None, "{", structurally_malformed, wrong_container):
             with self.subTest(source=source):
                 temporary, artifact, _, data, markdown = self.finalize(source, "success")
                 with temporary:
                     self.assertEqual(data["publication"]["state"], "not_attempted")
                     self.assertNotIn("Proof: **PASS**", markdown)
                     if source is not None:
-                        self.assertEqual((artifact / "summary.invalid.json").read_text(), source)
+                        invalid = (artifact / "summary.invalid.json").read_text()
+                        if isinstance(source, str):
+                            self.assertEqual(invalid, source)
+                        else:
+                            self.assertEqual(json.loads(invalid), source)
 
     def test_repeated_finalization_is_idempotent_and_formats_agree(self) -> None:
         temporary, artifact, _, first, first_markdown = self.finalize(self.data(), "success")

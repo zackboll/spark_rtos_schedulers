@@ -470,7 +470,12 @@ def finalize(artifact_dir: Path, upload_outcome: str, sarif_valid: str) -> int:
         data = json.loads(summary_path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("summary root is not an object")
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        # A JSON object can still be unusable as provisional evidence.  Render
+        # it before deriving publication state so incomplete nested report or
+        # SARIF data cannot crash the always-running CI finalizer.
+        make_summary(data)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError,
+            KeyError, TypeError, AttributeError) as exc:
         if summary_path.exists():
             (artifact_dir / "summary.invalid.json").write_bytes(summary_path.read_bytes())
         data = {

@@ -125,6 +125,10 @@ The intended proof target is SPARK Gold integrity, documented in
 include "at most one Running task" and "ready-queue membership matches
 Ready state".
 
+The native GNATprove SARIF warning and assumption baseline is audited in
+[`docs/sarif_diagnostics.md`](docs/sarif_diagnostics.md). Its counts are tied
+to the documented hosted run; they are not permanent expected-warning totals.
+
 Gold here means proved structural/integrity contracts. It does **not**
 mean full functional correctness of the scheduler. The pointer
 scheduler currently meets that Gold target. The indexed scheduler
