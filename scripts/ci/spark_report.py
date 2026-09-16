@@ -17,6 +17,7 @@ REQUIRED_UNITS = ("rtos-indexed_scheduler", "rtos-pointer_scheduler")
 PROOF_COMMAND = [
     "alr", "-n", "exec", "--", "gnatprove",
     "-P", "spark_rtos_schedulers.gpr", "-U", "--mode=all", "--level=2",
+    "--timeout=0", "--steps=10000000",
     "--checks-as-errors=on", "--report=all", "--output=brief",
     "--output-header",
 ]
@@ -104,25 +105,42 @@ def parse_report(text: str) -> dict[str, Any]:
     )
     unit_counts: dict[str, dict[str, Any]] = {}
     current_unit: str | None = None
+    detail_pattern = re.compile(
+        r"^  .+ flow analyzed \((\d+) errors?, \d+ checks?, \d+ warnings? "
+        r"and \d+ pragma Assume statements?\) and "
+        r"(?:(proved) \((\d+) checks?\)|"
+        r"(not proved), (\d+) checks? out of (\d+) proved)$"
+    )
     for line in lines:
         if match := unit_pattern.match(line):
             current_unit = match.group(1)
             unit_counts[current_unit] = {
                 "analyzed": int(match.group(2)), "available": int(match.group(3)),
-                "detailed_entries": 0, "all_flow_and_proof": True,
+                "detailed_entries": 0, "malformed_entries": 0,
+                "analysis_errors": 0, "proved_entries": 0,
+                "not_proved_entries": 0,
             }
         elif current_unit and line.startswith("  "):
+            detail = detail_pattern.match(line)
+            if detail is None:
+                unit_counts[current_unit]["malformed_entries"] += 1
+                continue
             unit_counts[current_unit]["detailed_entries"] += 1
-            unit_counts[current_unit]["all_flow_and_proof"] &= (
-                " flow analyzed (" in line and " and proved (" in line
-            )
+            unit_counts[current_unit]["analysis_errors"] += int(detail.group(1))
+            if detail.group(2) == "proved":
+                unit_counts[current_unit]["proved_entries"] += 1
+            else:
+                proved, checks = int(detail.group(5)), int(detail.group(6))
+                if proved >= checks:
+                    unit_counts[current_unit]["malformed_entries"] += 1
+                unit_counts[current_unit]["not_proved_entries"] += 1
     missing = [unit for unit in REQUIRED_UNITS if unit not in unit_counts]
     incomplete = [
         unit for unit in REQUIRED_UNITS if unit in unit_counts
         and (unit_counts[unit]["available"] == 0
              or unit_counts[unit]["analyzed"] != unit_counts[unit]["available"]
              or unit_counts[unit]["detailed_entries"] != unit_counts[unit]["analyzed"]
-             or not unit_counts[unit]["all_flow_and_proof"])
+             or unit_counts[unit]["malformed_entries"] != 0)
     ]
     error_counts = [int(value) for value in re.findall(r"\((\d+) errors?[,)]", text)]
     if not error_counts:
@@ -151,7 +169,7 @@ def parse_report(text: str) -> dict[str, Any]:
         "justified_checks": justified,
         "categories": rows,
         "required_units": unit_counts,
-        "analysis_complete": not failures,
+        "analysis_complete": not missing and not incomplete and not any(error_counts),
         "gate_failures": failures,
         "original_summary_table": "\n".join(table_lines),
     }

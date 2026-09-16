@@ -38,6 +38,8 @@ alr -n exec -- gnatprove \
   -U \
   --mode=all \
   --level=2 \
+  --timeout=0 \
+  --steps=10000000 \
   --checks-as-errors=on \
   --report=all \
   --output=brief \
@@ -45,7 +47,9 @@ alr -n exec -- gnatprove \
 ```
 
 Command-line `--mode=all` overrides the project's `--mode=prove` switch so CI
-runs both flow analysis and proof. The workflow badge reports the latest
+runs both flow analysis and proof. The explicit finite step budget avoids
+machine-speed-dependent prover cutoffs; the proof job retains a 45-minute
+overall timeout. The workflow badge reports the latest
 applicable push status on `main`; it does not establish completeness of the
 formal requirements. Formal-requirement status remains documented separately
 in [`proof_strategy.md`](proof_strategy.md).

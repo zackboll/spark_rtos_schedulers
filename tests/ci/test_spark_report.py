@@ -7,11 +7,19 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import importlib.util
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/ci/spark_report.py"
 SUCCESS = (Path(__file__).parent / "fixtures/success.out").read_text(encoding="utf-8")
+UNPROVED_COMPLETE = (Path(__file__).parent / "fixtures/unproved_complete.out").read_text(
+    encoding="utf-8"
+)
+SPEC = importlib.util.spec_from_file_location("spark_report", SCRIPT)
+assert SPEC and SPEC.loader
+SPARK_REPORT = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(SPARK_REPORT)
 
 
 class GateTests(unittest.TestCase):
@@ -41,6 +49,15 @@ class GateTests(unittest.TestCase):
     def test_nonzero_unproved_fails(self) -> None:
         report = self.replace_total(provers="2 (33%)", unproved="1")
         self.assertNotEqual(self.gate(report).returncode, 0)
+
+    def test_actual_not_proved_format_has_complete_analysis_but_fails_gate(self) -> None:
+        parsed = SPARK_REPORT.parse_report(UNPROVED_COMPLETE)
+        self.assertTrue(parsed["analysis_complete"])
+        self.assertEqual(parsed["unproved_checks"], 1)
+        self.assertEqual(
+            parsed["required_units"]["rtos-pointer_scheduler"]["not_proved_entries"], 1
+        )
+        self.assertNotEqual(self.gate(UNPROVED_COMPLETE, subprocess_status=1).returncode, 0)
 
     def test_nonzero_justified_fails(self) -> None:
         report = self.replace_total(provers="2 (33%)", justified="1")

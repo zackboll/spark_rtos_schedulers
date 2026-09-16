@@ -143,7 +143,7 @@ meets its current local contracts, not yet Gold reachability.
 
 ```
 alr build
-alr -n exec -- gnatprove -P spark_rtos_schedulers.gpr -U --mode=all --level=2 --checks-as-errors=on --report=all --output=brief --output-header
+alr -n exec -- gnatprove -P spark_rtos_schedulers.gpr -U --mode=all --level=2 --timeout=0 --steps=10000000 --checks-as-errors=on --report=all --output=brief --output-header
 ```
 
 The project uses GNATprove proof level 2 for ownership/framing checks. Current
