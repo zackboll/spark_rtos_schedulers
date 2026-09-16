@@ -28,4 +28,18 @@ if [[ $status -eq 0 ]]; then
   exit 1
 fi
 grep -Eq 'unproved|medium: assertion might fail|high: assertion might fail' "$tmp/gnatprove.log"
+sarif="$tmp/obj/gnatprove/gnatprove.sarif"
+python3 - "$sarif" <<'PY'
+import json
+import sys
+
+document = json.load(open(sys.argv[1], encoding="utf-8"))
+results = document["runs"][0]["results"]
+matches = [result for result in results
+           if "assertion might fail" in result.get("message", {}).get("text", "")]
+assert matches, "native SARIF does not contain the intentionally unproved assertion"
+location = matches[0]["locations"][0]["physicalLocation"]
+assert location["artifactLocation"]["uri"] == "negative.adb", location
+assert location["region"]["startLine"] == 3, location
+PY
 echo "native checks-as-errors negative test passed (exit status $status)"

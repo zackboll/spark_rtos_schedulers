@@ -13,6 +13,9 @@ jobs:
     name: SPARK / GNATprove
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -33,6 +36,32 @@ jobs:
       - name: Run complete SPARK analysis and gate results
         id: proof
         run: python3 scripts/ci/spark_report.py run --artifact-dir artifacts/spark
+
+      - name: Publish native GNATprove SARIF
+        id: sarif_upload
+        if: ${{ always() && !cancelled() && steps.proof.outputs.sarif_valid == 'true' }}
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: artifacts/spark/gnatprove-upload.sarif
+          checkout_path: ${{ github.workspace }}
+          category: spark-gnatprove
+          wait-for-processing: true
+
+      - name: Record SARIF publication status
+        if: ${{ always() && !cancelled() }}
+        shell: bash
+        env:
+          SARIF_VALID: ${{ steps.proof.outputs.sarif_valid }}
+          UPLOAD_OUTCOME: ${{ steps.sarif_upload.outcome }}
+        run: |
+          if [[ "$SARIF_VALID" != true ]]; then
+            message='**SARIF publication:** not attempted — no valid fresh native report was available.'
+          elif [[ "$UPLOAD_OUTCOME" == success ]]; then
+            message='**SARIF publication:** upload accepted and processing completed.'
+          else
+            message="**SARIF publication:** failed (upload step outcome: $UPLOAD_OUTCOME). This is a reporting failure, not a mathematical proof result."
+          fi
+          printf '\n%s\n' "$message" | tee -a artifacts/spark/summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish fallback job summary
         if: ${{ always() }}

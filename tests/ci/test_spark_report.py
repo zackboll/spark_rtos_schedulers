@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -77,6 +78,92 @@ class GateTests(unittest.TestCase):
     def test_missing_or_incomplete_scheduler_fails(self) -> None:
         self.assertNotEqual(self.gate(SUCCESS.replace("in unit rtos-pointer_scheduler", "in unit other")).returncode, 0)
         self.assertNotEqual(self.gate(SUCCESS.replace("3 subprograms and packages out of 3", "2 subprograms and packages out of 3")).returncode, 0)
+
+
+class SarifTests(unittest.TestCase):
+    def document(self, results: list[dict] | None = None) -> dict:
+        return {
+            "version": "2.1.0",
+            "runs": [{
+                "tool": {"driver": {"name": "GNATProve", "version": "FSF 16.1.0",
+                                      "rules": [{"id": "VC_ASSERT"}]}},
+                "invocations": [{"executionSuccessful": True, "exitCode": 0}],
+                "results": [] if results is None else results,
+            }],
+        }
+
+    def result(self, uri: str = "rtos-pointer_scheduler.ads") -> dict:
+        return {
+            "ruleId": "VC_ASSERT", "kind": "open", "level": "warning",
+            "message": {"text": "assertion might fail"},
+            "locations": [{"physicalLocation": {
+                "artifactLocation": {"uri": uri}, "region": {"startLine": 15}}}],
+        }
+
+    def collect(self, document: dict | str | None, *, stale: bool = False):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "src").mkdir()
+        (root / "src/rtos-pointer_scheduler.ads").write_text("package X is end X;\n")
+        output = root / "obj/gnatprove"
+        output.mkdir(parents=True)
+        report = output / "gnatprove.out"
+        report.write_text("fresh report\n")
+        sarif = output / "gnatprove.sarif"
+        if document is not None:
+            sarif.write_text(document if isinstance(document, str) else json.dumps(document))
+        started = sarif.stat().st_mtime_ns + 1 if document is not None and stale else 0
+        before = {str(sarif.resolve()): sarif.stat().st_mtime_ns} if stale else {}
+        artifact = root / "artifacts"
+        artifact.mkdir()
+        return temporary, SPARK_REPORT.collect_native_sarif(
+            report, artifact, started, before, root
+        ), artifact
+
+    def test_native_report_is_collected_and_repository_path_is_mapped(self) -> None:
+        temporary, metadata, artifact = self.collect(self.document([self.result()]))
+        with temporary:
+            self.assertEqual(metadata["results"], 1)
+            self.assertEqual(metadata["open_warnings"], 1)
+            self.assertTrue((artifact / "gnatprove.sarif").is_file())
+            upload = json.loads((artifact / "gnatprove-upload.sarif").read_text())
+            location = upload["runs"][0]["results"][0]["locations"][0]
+            self.assertEqual(
+                location["physicalLocation"]["artifactLocation"]["uri"],
+                "src/rtos-pointer_scheduler.ads",
+            )
+
+    def test_valid_completed_report_with_no_findings_is_not_missing(self) -> None:
+        temporary, metadata, _ = self.collect(self.document())
+        with temporary:
+            self.assertTrue(metadata["valid"])
+            self.assertEqual(metadata["results"], 0)
+
+    def test_missing_malformed_and_truncated_sarif_are_rejected(self) -> None:
+        for value in (None, "{", '{"version":"2.1.0"}'):
+            with self.subTest(value=value), self.assertRaises(SPARK_REPORT.ReportError):
+                self.collect(value)
+
+    def test_stale_sarif_is_rejected(self) -> None:
+        with self.assertRaisesRegex(SPARK_REPORT.ReportError, "stale"):
+            self.collect(self.document(), stale=True)
+
+    def test_nonzero_analyzer_status_does_not_prevent_collection(self) -> None:
+        # Collection is intentionally independent of GNATprove's authoritative status.
+        analyzer_status = 1
+        temporary, metadata, _ = self.collect(self.document([self.result()]))
+        with temporary:
+            self.assertEqual(analyzer_status, 1)
+            self.assertTrue(metadata["valid"])
+
+    def test_external_dependency_location_is_not_relabelled(self) -> None:
+        temporary, _, artifact = self.collect(self.document([self.result("a-nbnbin.ads")]))
+        with temporary:
+            upload = json.loads((artifact / "gnatprove-upload.sarif").read_text())
+            location = upload["runs"][0]["results"][0]["locations"][0]
+            self.assertEqual(location["physicalLocation"]["artifactLocation"]["uri"],
+                             "a-nbnbin.ads")
 
 
 if __name__ == "__main__":

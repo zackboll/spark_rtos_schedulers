@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 REQUIRED_UNITS = ("rtos-indexed_scheduler", "rtos-pointer_scheduler")
+SARIF_NAME = "gnatprove.sarif"
+SARIF_UPLOAD_NAME = "gnatprove-upload.sarif"
 PROOF_COMMAND = [
     "alr", "-n", "exec", "--", "gnatprove",
     "-P", "spark_rtos_schedulers.gpr", "-U", "--mode=all", "--level=2",
@@ -25,6 +27,87 @@ PROOF_COMMAND = [
 
 class ReportError(ValueError):
     """The report is absent, malformed, or fails the strict gate."""
+
+
+def validate_and_normalize_sarif(
+    source: Path, upload: Path, repository: Path = Path(".")
+) -> dict[str, Any]:
+    """Validate native GNATprove SARIF and map repository source basenames."""
+    try:
+        document = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ReportError(f"native SARIF is missing or malformed: {exc}") from exc
+    if document.get("version") != "2.1.0":
+        raise ReportError("native SARIF does not declare version 2.1.0")
+    runs = document.get("runs")
+    if not isinstance(runs, list) or not runs:
+        raise ReportError("native SARIF has no runs")
+
+    source_files: dict[str, list[Path]] = {}
+    for path in (repository / "src").glob("**/*"):
+        if path.is_file():
+            source_files.setdefault(path.name, []).append(path.relative_to(repository))
+    result_count = warning_count = mapped_count = 0
+    tools = []
+    for run in runs:
+        if not isinstance(run, dict):
+            raise ReportError("native SARIF contains a malformed run")
+        driver = run.get("tool", {}).get("driver", {})
+        name = driver.get("name")
+        if not isinstance(name, str) or name.lower() != "gnatprove":
+            raise ReportError(f"native SARIF has unexpected tool identity: {name!r}")
+        tools.append({"name": name, "version": driver.get("version", "unavailable")})
+        results = run.get("results")
+        invocations = run.get("invocations")
+        if not isinstance(results, list):
+            raise ReportError("native SARIF results are missing or malformed")
+        if not isinstance(invocations, list) or not invocations:
+            raise ReportError("native SARIF invocation information is missing")
+        result_count += len(results)
+        for result in results:
+            if not isinstance(result, dict) or not isinstance(result.get("ruleId"), str):
+                raise ReportError("native SARIF result has no rule identifier")
+            if not isinstance(result.get("message", {}).get("text"), str):
+                raise ReportError("native SARIF result has no message")
+            if result.get("level") == "warning" and result.get("kind") != "pass":
+                warning_count += 1
+            for location in result.get("locations", []):
+                artifact = location.get("physicalLocation", {}).get("artifactLocation", {})
+                uri = artifact.get("uri")
+                if not isinstance(uri, str) or "/" in uri or "\\" in uri:
+                    continue
+                matches = source_files.get(uri, [])
+                if len(matches) == 1:
+                    artifact["uri"] = matches[0].as_posix()
+                    mapped_count += 1
+
+    upload.write_text(json.dumps(document, separators=(",", ":")) + "\n", encoding="utf-8")
+    return {
+        "available": True, "valid": True, "version": "2.1.0", "tools": tools,
+        "runs": len(runs), "results": result_count, "open_warnings": warning_count,
+        "mapped_locations": mapped_count, "native_file": source.name,
+        "upload_file": upload.name,
+    }
+
+
+def collect_native_sarif(
+    report: Path, artifact_dir: Path, started: int, before: dict[str, int],
+    repository: Path = Path("."),
+) -> dict[str, Any]:
+    """Collect only the native SARIF paired with the fresh text report."""
+    source = report.with_name(SARIF_NAME)
+    try:
+        stat = source.stat()
+    except OSError as exc:
+        raise ReportError(f"native SARIF is unavailable beside {report}: {exc}") from exc
+    absolute = str(source.resolve())
+    if stat.st_mtime_ns < started and stat.st_mtime_ns == before.get(absolute):
+        raise ReportError("native SARIF is stale from an earlier invocation")
+    native_copy = artifact_dir / SARIF_NAME
+    native_copy.write_bytes(source.read_bytes())
+    return validate_and_normalize_sarif(
+        native_copy, artifact_dir / SARIF_UPLOAD_NAME, repository
+    )
 
 
 def _number(cell: str, name: str) -> int:
@@ -246,6 +329,18 @@ def make_summary(data: dict[str, Any]) -> str:
         f"- GPRbuild: `{versions.get('gprbuild', 'unavailable')}`",
         f"- Alire: `{versions.get('alire', 'unavailable')}`", "",
     ]
+    sarif = data.get("sarif")
+    if sarif and sarif.get("valid"):
+        lines += [
+            "## SARIF publication", "",
+            f"- Native SARIF: available and valid (`{sarif['version']}`, {sarif['results']} results)",
+            "- Publication: pending upload step",
+            "- Category: `spark-gnatprove`", "",
+        ]
+    else:
+        reason = data.get("sarif_error", "native SARIF unavailable")
+        lines += ["## SARIF publication", "", f"- Native SARIF: unavailable or invalid ({reason})",
+                  "- Publication: not attempted", ""]
     if completed:
         lines += [
             "| Metric | Count |", "|---|---:|",
@@ -272,8 +367,8 @@ def make_summary(data: dict[str, Any]) -> str:
 def run_proof(artifact_dir: Path) -> int:
     artifact_dir.mkdir(parents=True, exist_ok=True)
     data: dict[str, Any] = {"identity": _identity(), "gnatprove_exit_status": "not run"}
-    report_paths = list(Path(".").glob("**/gnatprove.out"))
-    before = {str(path.resolve()): path.stat().st_mtime_ns for path in report_paths}
+    tracked_paths = list(Path(".").glob("**/gnatprove.out")) + list(Path(".").glob("**/gnatprove.sarif"))
+    before = {str(path.resolve()): path.stat().st_mtime_ns for path in tracked_paths}
     try:
         data["versions"] = record_versions(artifact_dir)
     except Exception as exc:  # Keep honest diagnostics for early tool failure.
@@ -304,11 +399,18 @@ def run_proof(artifact_dir: Path) -> int:
     report_text = candidates[0].read_text(encoding="utf-8")
     (artifact_dir / "gnatprove.out").write_text(report_text, encoding="utf-8")
     try:
+        data["sarif"] = collect_native_sarif(
+            candidates[0], artifact_dir, started, before
+        )
+    except ReportError as exc:
+        data["sarif_error"] = str(exc)
+    try:
         data["report"] = parse_report(report_text)
     except ReportError as exc:
         data["report_error"] = str(exc)
         return write_results(artifact_dir, data, 1)
-    gate_status = 0 if status == 0 and not data["report"]["gate_failures"] else 1
+    gate_status = 0 if (status == 0 and not data["report"]["gate_failures"]
+                        and "sarif_error" not in data) else 1
     return write_results(artifact_dir, data, gate_status)
 
 
@@ -321,6 +423,11 @@ def write_results(artifact_dir: Path, data: dict[str, Any], status: int) -> int:
             output.write(summary + "\n")
     if data.get("report_error"):
         print(f"report gate: {data['report_error']}", file=sys.stderr)
+    if data.get("sarif_error"):
+        print(f"SARIF reporting: {data['sarif_error']}", file=sys.stderr)
+    if output_path := os.environ.get("GITHUB_OUTPUT"):
+        with open(output_path, "a", encoding="utf-8") as output:
+            output.write(f"sarif_valid={'true' if data.get('sarif', {}).get('valid') else 'false'}\n")
     for failure in data.get("report", {}).get("gate_failures", []):
         print(f"report gate: {failure}", file=sys.stderr)
     return status
