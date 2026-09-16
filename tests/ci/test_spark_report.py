@@ -264,6 +264,60 @@ class FinalizationTests(unittest.TestCase):
             self.assertEqual(data["publication"]["state"], "not_attempted")
             self.assertIn("no valid fresh native report", markdown)
 
+    def test_absent_sarif_after_early_failure_is_not_malformed(self) -> None:
+        source = {
+            "identity": {}, "gnatprove_exit_status": "not run", "versions": {},
+            "setup_error": "synthetic early failure",
+        }
+        temporary, artifact, status, data, markdown = self.finalize(
+            source, "success", "true"
+        )
+        with temporary:
+            self.assertEqual(status, 0)
+            self.assertFalse((artifact / "summary.invalid.json").exists())
+            self.assertEqual(data["publication"]["state"], "not_attempted")
+            self.assertIn("no valid fresh native report", markdown)
+            self.assertNotIn("malformed", markdown)
+
+    def test_invalid_present_sarif_containers_recover_conservatively(self) -> None:
+        invalid_values = (None, [], ["unexpected"], "unexpected", 1, True)
+        for value in invalid_values:
+            for valid in ("true", "false"):
+                with self.subTest(value=value, sarif_valid=valid):
+                    source = self.data()
+                    source["sarif"] = value
+                    original = json.dumps(source).encode()
+                    temporary, artifact, status, data, markdown = self.finalize(
+                        source, "success", valid
+                    )
+                    with temporary:
+                        self.assertEqual(status, 0)
+                        self.assertEqual(
+                            (artifact / "summary.invalid.json").read_bytes(), original
+                        )
+                        self.assertEqual(data["publication"]["state"], "not_attempted")
+                        reason = data["publication"]["reason"]
+                        self.assertIn("evidence was malformed", reason)
+                        self.assertIn(
+                            "final publication status could not be established", reason
+                        )
+                        self.assertIn(reason, markdown)
+                        self.assertNotIn("Proof: **PASS**", markdown)
+                        self.assertNotIn("**Overall result: PASS**", markdown)
+                        self.assertEqual(markdown, SPARK_REPORT.make_summary(data))
+
+                        first_json = (artifact / "summary.json").read_bytes()
+                        first_markdown = (artifact / "summary.md").read_bytes()
+                        self.assertEqual(
+                            SPARK_REPORT.finalize(artifact, "success", valid), 0
+                        )
+                        self.assertEqual(
+                            (artifact / "summary.invalid.json").read_bytes(), original
+                        )
+                        self.assertEqual((artifact / "summary.json").read_bytes(), first_json)
+                        self.assertEqual((artifact / "summary.md").read_bytes(), first_markdown)
+                        self.assertEqual(markdown.count("## SARIF publication"), 1)
+
     def test_missing_and_malformed_summary_do_not_fabricate_success(self) -> None:
         structurally_malformed = self.data()
         structurally_malformed["sarif"] = {"valid": True}

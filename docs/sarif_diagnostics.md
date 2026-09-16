@@ -85,11 +85,17 @@ occurrence counts, arrays of those values, and arithmetic over them as
 `Big_Natural`. The recursive model functions (`List_Length`, `Occurrences`) and
 the copy/aggregate helpers are marked `Ghost`; their values also appear in
 preconditions, postconditions, invariants, lemmas, and `pragma Assert` proof
-expressions. They do not form ordinary executable scheduler state or control
-the non-Ghost scheduling transitions. Assertion execution policy can affect
-whether non-Ghost assertions are evaluated in a built program, but Ghost code
-itself is proof-only. This audit therefore identifies a mathematical-model and
-contract dependency, not evidence of ordinary runtime big-integer scheduling.
+expressions. These values support specification and verification and do not
+form ordinary scheduler state. Whether Ghost computations and their associated
+assertions execute depends on the applicable assertion policies and build
+configuration; contracts and assertions have their own applicable assertion
+policies. When enabled, these computations can perform big-integer calculations
+at runtime; when disabled, the corresponding Ghost code is omitted. Ghost
+classification is therefore not, by itself, evidence that generated code
+contains no Ghost computations, and this audit has not established which
+computations are present in every build profile. The mathematical-model and
+library trust-boundary discussion remains valid; it is not evidence of ordinary
+runtime big-integer scheduler state.
 
 The current proof establishes the reported scheduler checks under GNATprove's
 model, including this library boundary and all other modeled assumptions. It
@@ -121,6 +127,8 @@ level, message, or suppression was rewritten to make a dashboard cleaner.
 - [SPARK User's Guide — How to Write Subprogram Contracts](https://docs.adacore.com/spark2014-docs/html/ug/en/source/how_to_write_subprogram_contracts.html)
 - [SPARK User's Guide — How to Investigate Unproved Checks](https://docs.adacore.com/spark2014-docs/html/ug/en/source/how_to_investigate_unproved_checks.html)
 - [SPARK User's Guide — Suppressing and managing assumptions](https://docs.adacore.com/spark2014-docs/html/ug/en/source/how_to_use_gnatprove_in_a_team.html)
+- [SPARK User's Guide — Ghost Code](https://docs.adacore.com/spark2014-docs/html/ug/en/source/specification_features.html#ghost-code)
+- [SPARK User's Guide — Pragma Assertion_Policy](https://docs.adacore.com/spark2014-docs/html/ug/en/source/assertion_pragmas.html#pragma-assertion-policy)
 - [SARIF 2.1.0 `suppression` object](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html)
 
 A successful proof remains conditional on the modeled environment. This audit

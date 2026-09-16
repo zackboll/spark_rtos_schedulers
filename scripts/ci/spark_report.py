@@ -470,6 +470,8 @@ def finalize(artifact_dir: Path, upload_outcome: str, sarif_valid: str) -> int:
         data = json.loads(summary_path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("summary root is not an object")
+        if "sarif" in data and not isinstance(data["sarif"], dict):
+            raise ValueError("summary SARIF field is not an object")
         # A JSON object can still be unusable as provisional evidence.  Render
         # it before deriving publication state so incomplete nested report or
         # SARIF data cannot crash the always-running CI finalizer.
@@ -484,7 +486,14 @@ def finalize(artifact_dir: Path, upload_outcome: str, sarif_valid: str) -> int:
         }
     valid = sarif_valid.lower() == "true" and data.get("sarif", {}).get("valid") is True
     if not valid:
-        publication = {"state": "not_attempted", "reason": "no valid fresh native report was available"}
+        malformed = str(data.get("report_error", "")).startswith(
+            "missing or malformed provisional summary:"
+        )
+        reason = (
+            "provisional evidence was malformed; final publication status could not be established from it"
+            if malformed else "no valid fresh native report was available"
+        )
+        publication = {"state": "not_attempted", "reason": reason}
     elif upload_outcome == "success":
         publication = {"state": "succeeded", "upload_outcome": upload_outcome}
     elif upload_outcome in {"skipped", "cancelled"}:
