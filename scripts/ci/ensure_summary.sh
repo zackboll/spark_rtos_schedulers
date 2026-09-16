@@ -3,9 +3,7 @@ set -euo pipefail
 
 artifact_dir=${1:-artifacts/spark}
 mkdir -p "$artifact_dir"
-if [[ -f "$artifact_dir/summary.md" ]]; then
-  exit 0
-else
+if [[ ! -f "$artifact_dir/summary.md" ]]; then
   cat >"$artifact_dir/summary.md" <<EOF
 # SPARK Verification
 
@@ -19,7 +17,4 @@ else
 
 The proof command did not produce a summary, usually because checkout, toolchain setup, dependency resolution, or a reporting test failed. Missing analysis is not treated as zero failures.
 EOF
-fi
-if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-  cat "$artifact_dir/summary.md" >> "$GITHUB_STEP_SUMMARY"
 fi

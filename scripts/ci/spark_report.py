@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -29,6 +30,78 @@ class ReportError(ValueError):
     """The report is absent, malformed, or fails the strict gate."""
 
 
+def inventory_sarif(document: dict[str, Any], repository: Path = Path(".")) -> dict[str, Any]:
+    """Inventory native result records without interpreting or filtering them."""
+    groups: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    kinds: dict[str, int] = {}
+    levels: dict[str, int] = {}
+    suppression_metadata: dict[str, int] = {}
+    total = pass_records = repository_records = external_records = 0
+    repository_root = repository.resolve()
+    source_basenames: dict[str, int] = {}
+    for path in (repository / "src").glob("**/*"):
+        if path.is_file():
+            source_basenames[path.name] = source_basenames.get(path.name, 0) + 1
+    for run in document["runs"]:
+        for result in run["results"]:
+            total += 1
+            rule = result["ruleId"]
+            kind = result.get("kind", "none")
+            level = result.get("level", "none")
+            message = result["message"]["text"]
+            pass_records += kind == "pass"
+            kinds[kind] = kinds.get(kind, 0) + 1
+            levels[level] = levels.get(level, 0) + 1
+            exact_suppression = None
+            if "suppressions" in result:
+                exact_suppression = json.dumps(
+                    result["suppressions"], sort_keys=True, separators=(",", ":")
+                )
+                suppression_metadata[exact_suppression] = (
+                    suppression_metadata.get(exact_suppression, 0) + 1
+                )
+            key = (rule, kind, level, message)
+            group = groups.setdefault(key, {
+                "rule_id": rule, "kind": kind, "level": level, "message": message,
+                "records": 0, "repository_records": 0, "external_records": 0,
+                "locations": {}, "suppressions": {},
+            })
+            group["records"] += 1
+            in_repository = False
+            for location in result.get("locations", []):
+                physical = location.get("physicalLocation", {})
+                uri = physical.get("artifactLocation", {}).get("uri", "unavailable")
+                region = physical.get("region", {})
+                rendered = f"{uri}:{region.get('startLine', '?')}:{region.get('startColumn', '?')}"
+                group["locations"][rendered] = group["locations"].get(rendered, 0) + 1
+                candidate = repository / uri
+                try:
+                    candidate.resolve().relative_to(repository_root)
+                    in_repository = in_repository or candidate.is_file()
+                except (OSError, ValueError):
+                    pass
+                if "/" not in uri and "\\" not in uri:
+                    in_repository = in_repository or source_basenames.get(uri) == 1
+            bucket = "repository_records" if in_repository else "external_records"
+            group[bucket] += 1
+            if in_repository:
+                repository_records += 1
+            else:
+                external_records += 1
+            if exact_suppression is not None:
+                group["suppressions"][exact_suppression] = (
+                    group["suppressions"].get(exact_suppression, 0) + 1
+                )
+    return {
+        "total_records": total, "pass_records": pass_records,
+        "non_pass_records": total - pass_records, "kinds": kinds, "levels": levels,
+        "repository_records": repository_records, "external_records": external_records,
+        "suppression_metadata": suppression_metadata,
+        "groups": sorted(groups.values(), key=lambda item: (
+            item["rule_id"], item["kind"], item["level"], item["message"])),
+    }
+
+
 def validate_and_normalize_sarif(
     source: Path, upload: Path, repository: Path = Path(".")
 ) -> dict[str, Any]:
@@ -47,6 +120,7 @@ def validate_and_normalize_sarif(
     for path in (repository / "src").glob("**/*"):
         if path.is_file():
             source_files.setdefault(path.name, []).append(path.relative_to(repository))
+    native_inventory = inventory_sarif(document, repository)
     result_count = warning_count = mapped_count = 0
     tools = []
     for run in runs:
@@ -87,6 +161,8 @@ def validate_and_normalize_sarif(
         "runs": len(runs), "results": result_count, "open_warnings": warning_count,
         "mapped_locations": mapped_count, "native_file": source.name,
         "upload_file": upload.name,
+        "native_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "inventory": native_inventory,
     }
 
 
@@ -311,17 +387,21 @@ def _identity() -> dict[str, str]:
 
 
 def make_summary(data: dict[str, Any]) -> str:
-    identity = data["identity"]
+    identity = data.get("identity", {})
     versions = data.get("versions", {})
     parsed = data.get("report")
     completed = parsed is not None
     gate = completed and data.get("gnatprove_exit_status") == 0 and not parsed["gate_failures"]
-    status = "PASS" if gate else "FAIL — proof not completed" if not completed else "FAIL"
+    proof_status = "PASS" if gate else "FAIL — proof not completed" if not completed else "FAIL"
+    publication = data.get("publication", {"state": "not_attempted", "reason": "state unavailable"})
+    publication_state = publication.get("state", "not_attempted")
+    overall = "PASS" if gate and publication_state == "succeeded" else "FAIL"
     lines = [
-        "# SPARK Verification", "", f"**Result: {status}**", "",
-        f"- Repository: `{identity['repository']}`",
-        f"- Commit: `{identity['commit']}`",
-        f"- Event/ref: `{identity['event']}` / `{identity['ref']}`",
+        "# SPARK Verification", "", f"**Overall result: {overall}**", "",
+        f"- Proof: **{proof_status}**",
+        f"- Repository: `{identity.get('repository', 'unavailable')}`",
+        f"- Commit: `{identity.get('commit', 'unavailable')}`",
+        f"- Event/ref: `{identity.get('event', 'unavailable')}` / `{identity.get('ref', 'unavailable')}`",
         f"- Analysis: `--mode=all`, proof level `2`",
         f"- GNATprove exit status: `{data.get('gnatprove_exit_status', 'unavailable')}`",
         f"- GNATprove: `{versions.get('gnatprove', 'unavailable')}`",
@@ -334,13 +414,13 @@ def make_summary(data: dict[str, Any]) -> str:
         lines += [
             "## SARIF publication", "",
             f"- Native SARIF: available and valid (`{sarif['version']}`, {sarif['results']} results)",
-            "- Publication: pending upload step",
+            f"- Publication: {_publication_text(publication)}",
             "- Category: `spark-gnatprove`", "",
         ]
     else:
         reason = data.get("sarif_error", "native SARIF unavailable")
         lines += ["## SARIF publication", "", f"- Native SARIF: unavailable or invalid ({reason})",
-                  "- Publication: not attempted", ""]
+                  f"- Publication: {_publication_text(publication)}", ""]
     if completed:
         lines += [
             "| Metric | Count |", "|---|---:|",
@@ -364,9 +444,75 @@ def make_summary(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _publication_text(publication: dict[str, Any]) -> str:
+    state = publication.get("state", "not_attempted")
+    if state == "succeeded":
+        return "succeeded — upload accepted and processing completed"
+    reason = publication.get("reason")
+    outcome = publication.get("upload_outcome")
+    detail = reason or (f"upload step outcome: {outcome}" if outcome else "reason unavailable")
+    return f"{state.replace('_', ' ')} — {detail}"
+
+
+def _write_artifacts(artifact_dir: Path, data: dict[str, Any]) -> None:
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "summary.json").write_text(
+        json.dumps(data, indent=2) + "\n", encoding="utf-8"
+    )
+    (artifact_dir / "summary.md").write_text(make_summary(data), encoding="utf-8")
+
+
+def finalize(artifact_dir: Path, upload_outcome: str, sarif_valid: str) -> int:
+    """Record the upload outcome and regenerate final artifacts idempotently."""
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = artifact_dir / "summary.json"
+    try:
+        data = json.loads(summary_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("summary root is not an object")
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        if summary_path.exists():
+            (artifact_dir / "summary.invalid.json").write_bytes(summary_path.read_bytes())
+        data = {
+            "identity": _identity(), "gnatprove_exit_status": "unavailable", "versions": {},
+            "report_error": f"missing or malformed provisional summary: {exc}",
+        }
+    valid = sarif_valid.lower() == "true" and data.get("sarif", {}).get("valid") is True
+    if not valid:
+        publication = {"state": "not_attempted", "reason": "no valid fresh native report was available"}
+    elif upload_outcome == "success":
+        publication = {"state": "succeeded", "upload_outcome": upload_outcome}
+    elif upload_outcome in {"skipped", "cancelled"}:
+        publication = {"state": upload_outcome, "upload_outcome": upload_outcome,
+                       "reason": "SARIF upload did not run to completion"}
+    else:
+        publication = {"state": "failed", "upload_outcome": upload_outcome or "unavailable",
+                       "reason": "SARIF upload did not succeed"}
+    data["publication"] = publication
+    _write_artifacts(artifact_dir, data)
+    return 0
+
+
+def publish(artifact_dir: Path, destination: Path | None = None) -> int:
+    """Publish exactly the current final Markdown to this step's summary file."""
+    summary = artifact_dir / "summary.md"
+    if not summary.is_file():
+        return 1
+    target = destination or (Path(value) if (value := os.environ.get("GITHUB_STEP_SUMMARY")) else None)
+    if target is None:
+        sys.stdout.write(summary.read_text(encoding="utf-8") + "\n")
+    else:
+        with target.open("a", encoding="utf-8") as output:
+            output.write(summary.read_text(encoding="utf-8") + "\n")
+    return 0
+
+
 def run_proof(artifact_dir: Path) -> int:
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    data: dict[str, Any] = {"identity": _identity(), "gnatprove_exit_status": "not run"}
+    data: dict[str, Any] = {
+        "identity": _identity(), "gnatprove_exit_status": "not run",
+        "publication": {"state": "pending", "reason": "awaiting SARIF upload step"},
+    }
     tracked_paths = list(Path(".").glob("**/gnatprove.out")) + list(Path(".").glob("**/gnatprove.sarif"))
     before = {str(path.resolve()): path.stat().st_mtime_ns for path in tracked_paths}
     try:
@@ -415,12 +561,7 @@ def run_proof(artifact_dir: Path) -> int:
 
 
 def write_results(artifact_dir: Path, data: dict[str, Any], status: int) -> int:
-    summary = make_summary(data)
-    (artifact_dir / "summary.md").write_text(summary, encoding="utf-8")
-    (artifact_dir / "summary.json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    if summary_path := os.environ.get("GITHUB_STEP_SUMMARY"):
-        with open(summary_path, "a", encoding="utf-8") as output:
-            output.write(summary + "\n")
+    _write_artifacts(artifact_dir, data)
     if data.get("report_error"):
         print(f"report gate: {data['report_error']}", file=sys.stderr)
     if data.get("sarif_error"):
@@ -452,12 +593,34 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--artifact-dir", type=Path, default=Path("artifacts/spark"))
+    run_parser.add_argument("--publish-summary", action="store_true")
     gate_parser = subparsers.add_parser("gate")
     gate_parser.add_argument("report", type=Path)
     gate_parser.add_argument("--subprocess-status", type=int, default=0)
+    finalize_parser = subparsers.add_parser("finalize")
+    finalize_parser.add_argument("--artifact-dir", type=Path, default=Path("artifacts/spark"))
+    finalize_parser.add_argument("--upload-outcome", default="")
+    finalize_parser.add_argument("--sarif-valid", default="false")
+    publish_parser = subparsers.add_parser("publish")
+    publish_parser.add_argument("--artifact-dir", type=Path, default=Path("artifacts/spark"))
+    publish_parser.add_argument("--destination", type=Path)
     args = parser.parse_args()
     if args.command == "run":
-        return run_proof(args.artifact_dir)
+        status = run_proof(args.artifact_dir)
+        if args.publish_summary:
+            summary_path = args.artifact_dir / "summary.json"
+            data = json.loads(summary_path.read_text(encoding="utf-8"))
+            data["publication"] = {
+                "state": "not_attempted",
+                "reason": "local run did not attempt GitHub SARIF upload",
+            }
+            _write_artifacts(args.artifact_dir, data)
+            publish(args.artifact_dir)
+        return status
+    if args.command == "finalize":
+        return finalize(args.artifact_dir, args.upload_outcome, args.sarif_valid)
+    if args.command == "publish":
+        return publish(args.artifact_dir, args.destination)
     return gate_file(args.report, args.subprocess_status)
 
 

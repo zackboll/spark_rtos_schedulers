@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 import importlib.util
+from copy import deepcopy
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -126,6 +127,8 @@ class SarifTests(unittest.TestCase):
         with temporary:
             self.assertEqual(metadata["results"], 1)
             self.assertEqual(metadata["open_warnings"], 1)
+            self.assertEqual(metadata["inventory"]["repository_records"], 1)
+            self.assertEqual(metadata["inventory"]["external_records"], 0)
             self.assertTrue((artifact / "gnatprove.sarif").is_file())
             upload = json.loads((artifact / "gnatprove-upload.sarif").read_text())
             location = upload["runs"][0]["results"][0]["locations"][0]
@@ -158,12 +161,149 @@ class SarifTests(unittest.TestCase):
             self.assertTrue(metadata["valid"])
 
     def test_external_dependency_location_is_not_relabelled(self) -> None:
-        temporary, _, artifact = self.collect(self.document([self.result("a-nbnbin.ads")]))
+        temporary, metadata, artifact = self.collect(
+            self.document([self.result("a-nbnbin.ads")])
+        )
         with temporary:
             upload = json.loads((artifact / "gnatprove-upload.sarif").read_text())
             location = upload["runs"][0]["results"][0]["locations"][0]
             self.assertEqual(location["physicalLocation"]["artifactLocation"]["uri"],
                              "a-nbnbin.ads")
+            self.assertEqual(metadata["inventory"]["external_records"], 1)
+
+    def test_generic_error_rule_uses_native_kind_and_level(self) -> None:
+        result = self.result("a-nbnbin.ads")
+        result.update({
+            "ruleId": "error", "kind": "open", "level": "warning",
+            "message": {"text": "function Is_Valid is assumed to return True"},
+        })
+        inventory = SPARK_REPORT.inventory_sarif(self.document([result]))
+        group = inventory["groups"][0]
+        self.assertEqual((group["rule_id"], group["kind"], group["level"]),
+                         ("error", "open", "warning"))
+        self.assertEqual(inventory["non_pass_records"], 1)
+
+    def test_suppression_metadata_is_preserved_and_unknown_family_visible(self) -> None:
+        result = self.result()
+        result.update({"ruleId": "future-family", "suppressions": [{"kind": "external"}]})
+        original = deepcopy(result)
+        temporary, metadata, artifact = self.collect(self.document([result]))
+        with temporary:
+            native = json.loads((artifact / "gnatprove.sarif").read_text())
+            upload = json.loads((artifact / "gnatprove-upload.sarif").read_text())
+            self.assertEqual(native["runs"][0]["results"][0], original)
+            self.assertEqual(upload["runs"][0]["results"][0]["suppressions"],
+                             [{"kind": "external"}])
+            groups = metadata["inventory"]["groups"]
+            self.assertEqual(groups[0]["rule_id"], "future-family")
+            self.assertEqual(metadata["inventory"]["suppression_metadata"],
+                             {'[{"kind":"external"}]': 1})
+
+
+class FinalizationTests(unittest.TestCase):
+    def data(self, *, proof_pass: bool = True, sarif: bool = True) -> dict:
+        report = SPARK_REPORT.parse_report(SUCCESS)
+        if not proof_pass:
+            report["gate_failures"] = ["synthetic proof failure"]
+        data = {
+            "identity": {"repository": "synthetic/repository", "commit": "0" * 40,
+                         "event": "synthetic", "ref": "refs/heads/test"},
+            "gnatprove_exit_status": 0 if proof_pass else 1,
+            "versions": {}, "report": report,
+            "publication": {"state": "pending", "reason": "synthetic pending state"},
+        }
+        if sarif:
+            data["sarif"] = {"valid": True, "version": "2.1.0", "results": 1}
+        else:
+            data["sarif_error"] = "synthetic unavailable SARIF"
+        return data
+
+    def finalize(self, data: dict | str | None, outcome: str, valid: str = "true"):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        artifact = Path(temporary.name) / "artifacts"
+        artifact.mkdir()
+        if data is not None:
+            (artifact / "summary.json").write_text(
+                data if isinstance(data, str) else json.dumps(data), encoding="utf-8"
+            )
+        status = SPARK_REPORT.finalize(artifact, outcome, valid)
+        final_data = json.loads((artifact / "summary.json").read_text())
+        markdown = (artifact / "summary.md").read_text()
+        return temporary, artifact, status, final_data, markdown
+
+    def test_successful_proof_and_publication(self) -> None:
+        temporary, _, status, data, markdown = self.finalize(self.data(), "success")
+        with temporary:
+            self.assertEqual(status, 0)
+            self.assertEqual(data["publication"]["state"], "succeeded")
+            self.assertIn("**Overall result: PASS**", markdown)
+            self.assertNotIn("pending", markdown)
+
+    def test_failed_proof_with_successful_publication(self) -> None:
+        temporary, _, _, data, markdown = self.finalize(
+            self.data(proof_pass=False), "success"
+        )
+        with temporary:
+            self.assertEqual(data["publication"]["state"], "succeeded")
+            self.assertIn("**Overall result: FAIL**", markdown)
+            self.assertIn("Proof: **FAIL**", markdown)
+
+    def test_successful_proof_with_failed_publication(self) -> None:
+        temporary, _, _, data, markdown = self.finalize(self.data(), "failure")
+        with temporary:
+            self.assertEqual(data["publication"]["state"], "failed")
+            self.assertIn("Proof: **PASS**", markdown)
+            self.assertIn("**Overall result: FAIL**", markdown)
+
+    def test_unavailable_sarif_means_no_upload(self) -> None:
+        temporary, _, _, data, markdown = self.finalize(
+            self.data(sarif=False), "skipped", "false"
+        )
+        with temporary:
+            self.assertEqual(data["publication"]["state"], "not_attempted")
+            self.assertIn("no valid fresh native report", markdown)
+
+    def test_missing_and_malformed_summary_do_not_fabricate_success(self) -> None:
+        for source in (None, "{"):
+            with self.subTest(source=source):
+                temporary, artifact, _, data, markdown = self.finalize(source, "success")
+                with temporary:
+                    self.assertEqual(data["publication"]["state"], "not_attempted")
+                    self.assertNotIn("Proof: **PASS**", markdown)
+                    if source is not None:
+                        self.assertEqual((artifact / "summary.invalid.json").read_text(), source)
+
+    def test_repeated_finalization_is_idempotent_and_formats_agree(self) -> None:
+        temporary, artifact, _, first, first_markdown = self.finalize(self.data(), "success")
+        with temporary:
+            SPARK_REPORT.finalize(artifact, "success", "true")
+            second = json.loads((artifact / "summary.json").read_text())
+            second_markdown = (artifact / "summary.md").read_text()
+            self.assertEqual(first, second)
+            self.assertEqual(first_markdown, second_markdown)
+            self.assertEqual(second_markdown.count("## SARIF publication"), 1)
+            self.assertEqual(second_markdown, SPARK_REPORT.make_summary(second))
+
+    def test_only_final_per_step_summary_is_published(self) -> None:
+        temporary, artifact, _, _, markdown = self.finalize(self.data(), "success")
+        with temporary:
+            provisional_step = Path(temporary.name) / "proof-step.md"
+            final_step = Path(temporary.name) / "final-step.md"
+            self.assertFalse(provisional_step.exists())
+            self.assertEqual(SPARK_REPORT.publish(artifact, final_step), 0)
+            self.assertEqual(final_step.read_text(), markdown + "\n")
+            self.assertNotIn("pending", final_step.read_text())
+
+    def test_local_nonpublication_is_not_reported_as_pending(self) -> None:
+        data = self.data()
+        data["publication"] = {
+            "state": "not_attempted",
+            "reason": "local run did not attempt GitHub SARIF upload",
+        }
+        markdown = SPARK_REPORT.make_summary(data)
+        self.assertIn("not attempted — local run did not attempt", markdown)
+        self.assertNotIn("pending", markdown)
 
 
 if __name__ == "__main__":

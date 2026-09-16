@@ -47,23 +47,20 @@ jobs:
           category: spark-gnatprove
           wait-for-processing: true
 
-      - name: Record SARIF publication status
-        if: ${{ always() && !cancelled() }}
+      - name: Finalize SPARK report
+        if: ${{ always() }}
         shell: bash
         env:
           SARIF_VALID: ${{ steps.proof.outputs.sarif_valid }}
           UPLOAD_OUTCOME: ${{ steps.sarif_upload.outcome }}
         run: |
-          if [[ "$SARIF_VALID" != true ]]; then
-            message='**SARIF publication:** not attempted — no valid fresh native report was available.'
-          elif [[ "$UPLOAD_OUTCOME" == success ]]; then
-            message='**SARIF publication:** upload accepted and processing completed.'
-          else
-            message="**SARIF publication:** failed (upload step outcome: $UPLOAD_OUTCOME). This is a reporting failure, not a mathematical proof result."
-          fi
-          printf '\n%s\n' "$message" | tee -a artifacts/spark/summary.md >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p artifacts/spark
+          python3 scripts/ci/spark_report.py finalize \
+            --artifact-dir artifacts/spark \
+            --sarif-valid "$SARIF_VALID" \
+            --upload-outcome "$UPLOAD_OUTCOME"
 
-      - name: Publish fallback job summary
+      - name: Ensure final report exists
         if: ${{ always() }}
         shell: bash
         run: |
@@ -73,10 +70,21 @@ jobs:
             mkdir -p artifacts/spark
             printf '%s\n' \
               '# SPARK Verification' '' \
-              '**Result: FAIL — proof not completed**' '' \
+              '**Overall result: FAIL**' '' \
+              '- Proof: **FAIL — proof not completed**' '' \
               'Checkout failed before repository reporting code was available.' \
               'Missing analysis is not treated as zero failures.' \
-              | tee artifacts/spark/summary.md >> "$GITHUB_STEP_SUMMARY"
+              > artifacts/spark/summary.md
+          fi
+
+      - name: Publish authoritative SPARK summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          if [[ -f scripts/ci/spark_report.py ]]; then
+            python3 scripts/ci/spark_report.py publish --artifact-dir artifacts/spark
+          else
+            cat artifacts/spark/summary.md >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Upload SPARK evidence

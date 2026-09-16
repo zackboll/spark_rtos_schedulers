@@ -28,6 +28,14 @@ actual counts, completeness, proof result, SARIF availability/publication
 status, category/method breakdowns, and the original summary table. Step logs
 retain failure diagnostics.
 
+The proof step writes provisional artifact data but does not publish it as a
+GitHub step summary. After the SARIF upload attempt, a finalizer records its
+actual outcome in `summary.json`, regenerates `summary.md`, and a single later
+step publishes that authoritative Markdown. Proof and publication outcomes are
+separate: a successful proof does not hide a failed upload, and a successful
+upload does not turn a failed or missing proof into a pass. For local use,
+`spark_report.py run --publish-summary` retains explicit immediate publication.
+
 Native GNATprove findings are uploaded under the stable `spark-gnatprove`
 category. After a real remote run, navigate to **Repository → Security → Code
 scanning** to inspect source-linked findings. The upload waits for GitHub to
@@ -76,6 +84,8 @@ An empty code-scanning alert list is not a Gold certificate and does not by
 itself establish complete formal verification. Actions summaries provide proof
 and completeness counts; code scanning provides source-linked native GNATprove
 diagnostics; retained run artifacts provide raw evidence for local inspection.
+The baseline native-diagnostic audit is recorded in
+[`sarif_diagnostics.md`](sarif_diagnostics.md).
 
 Making the `SPARK / GNATprove` check mandatory before merging requires a
 separate GitHub ruleset or branch-protection configuration. This repository
